@@ -1,6 +1,9 @@
 # tests/test_environment.py
-"""Assert external tools required by Tier 1 are installed."""
+"""External-tool environment checks. epub2md is required; pandoc is optional
+(only needed for PDF input, which is best-effort in v1)."""
 import shutil
+
+import pytest
 
 
 def test_epub2md_installed():
@@ -9,7 +12,9 @@ def test_epub2md_installed():
     )
 
 
-def test_pandoc_installed():
-    assert shutil.which("pandoc") is not None, (
-        "pandoc not found on PATH. Install with: apt install pandoc  (or brew install pandoc)"
-    )
+def test_pandoc_installed_or_skip():
+    if shutil.which("pandoc") is None:
+        pytest.skip(
+            "pandoc not on PATH. Required only for PDF input (best-effort in v1). "
+            "Install with: apt install pandoc  (or brew install pandoc)"
+        )
