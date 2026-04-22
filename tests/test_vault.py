@@ -1,7 +1,14 @@
 # tests/test_vault.py
 from pathlib import Path
 
-from book_summarizer.vault import bootstrap_vault, write_raw_book, raw_book_path
+from book_summarizer.vault import (
+    append_collected_row,
+    is_ingested,
+    CollectedRow,
+    bootstrap_vault,
+    write_raw_book,
+    raw_book_path,
+)
 
 
 def test_bootstrap_creates_expected_structure(tmp_vault: Path):
@@ -46,3 +53,36 @@ def test_raw_book_path_slugs_unsafe_chars(tmp_vault: Path):
     assert ":" not in p.name
     assert "/" not in p.name.replace(" - ", "")
     assert p.parent == tmp_vault / "raw" / "books"
+
+
+def test_append_collected_row_writes_entry(tmp_vault: Path):
+    bootstrap_vault(tmp_vault)
+    row = CollectedRow(
+        title="Deep Work",
+        author="Cal Newport",
+        status="queued",
+        chapters=15,
+        conversion_quality="high",
+        mode="structured",
+        lens="",
+        analyzed_at="",
+        source=str(tmp_vault / "source.epub"),
+    )
+    append_collected_row(tmp_vault, row)
+    text = (tmp_vault / "collected.md").read_text()
+    assert "Deep Work" in text
+    assert "Cal Newport" in text
+    assert "queued" in text
+    assert "high" in text
+
+
+def test_is_ingested_after_append(tmp_vault: Path):
+    bootstrap_vault(tmp_vault)
+    assert is_ingested(tmp_vault, "Deep Work", "Cal Newport") is False
+    row = CollectedRow(
+        title="Deep Work", author="Cal Newport", status="queued",
+        chapters=15, conversion_quality="high", mode="structured",
+        lens="", analyzed_at="", source="/tmp/x.epub",
+    )
+    append_collected_row(tmp_vault, row)
+    assert is_ingested(tmp_vault, "Deep Work", "Cal Newport") is True

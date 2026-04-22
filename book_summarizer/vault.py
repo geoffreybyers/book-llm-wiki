@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -175,3 +176,78 @@ def write_raw_book(
     else:
         raise ValueError("Provide source_markdown_path OR content")
     return dest
+
+
+@dataclass
+class CollectedRow:
+    title: str
+    author: str
+    status: str            # 'queued' | 'analyzed' | 'failed'
+    chapters: int
+    conversion_quality: str  # 'high' | 'low'
+    mode: str              # 'structured' | 'flat'
+    lens: str              # '' when not yet analyzed
+    analyzed_at: str       # '' when not yet analyzed
+    source: str            # absolute source path
+
+    def to_row(self) -> str:
+        cols = [
+            self.title,
+            self.author,
+            self.status,
+            str(self.chapters),
+            self.conversion_quality,
+            self.mode,
+            self.lens,
+            self.analyzed_at,
+            self.source,
+        ]
+        # Escape pipes in cell values to avoid breaking markdown table
+        cols = [c.replace("|", "\\|") for c in cols]
+        return "| " + " | ".join(cols) + " |"
+
+
+def append_collected_row(vault_path: Path, row: CollectedRow) -> None:
+    collected = Path(vault_path) / "collected.md"
+    if not collected.exists():
+        collected.write_text(COLLECTED_HEADER)
+    with collected.open("a") as fh:
+        fh.write(row.to_row() + "\n")
+
+
+def _read_collected_rows(vault_path: Path) -> list[dict]:
+    collected = Path(vault_path) / "collected.md"
+    if not collected.exists():
+        return []
+    rows = []
+    header_passed = False
+    for line in collected.read_text().splitlines():
+        if line.startswith("|---"):
+            header_passed = True
+            continue
+        if not header_passed:
+            continue
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 9:
+            continue
+        rows.append({
+            "title": cells[0],
+            "author": cells[1],
+            "status": cells[2],
+            "chapters": cells[3],
+            "conversion_quality": cells[4],
+            "mode": cells[5],
+            "lens": cells[6],
+            "analyzed_at": cells[7],
+            "source": cells[8],
+        })
+    return rows
+
+
+def is_ingested(vault_path: Path, title: str, author: str) -> bool:
+    for row in _read_collected_rows(vault_path):
+        if row["title"] == title and row["author"] == author:
+            return True
+    return False
