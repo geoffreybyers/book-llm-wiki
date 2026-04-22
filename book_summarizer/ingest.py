@@ -15,6 +15,8 @@ from book_summarizer.vault import (
     write_raw_book,
 )
 
+SUPPORTED_EXTS = {".epub", ".pdf", ".md", ".markdown"}
+
 
 def ingest_file(src: Path, vault_path: Path) -> dict:
     """Convert a book, write raw markdown, update vault metadata files.
@@ -76,3 +78,24 @@ def ingest_file(src: Path, vault_path: Path) -> dict:
         "conversion_quality": result.conversion_quality,
         "mode": result.mode,
     }
+
+
+def ingest_directory(directory: Path, vault_path: Path) -> list[dict]:
+    """Recursively find all supported files in directory and ingest each.
+
+    Skips already-ingested books (by Title + Author match against collected.md).
+    """
+    directory = Path(directory).resolve()
+    vault_path = Path(vault_path).resolve()
+    if not directory.is_dir():
+        raise NotADirectoryError(str(directory))
+
+    results = []
+    # Sort for stable order
+    candidates = sorted(
+        p for p in directory.rglob("*")
+        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS and not str(p).startswith(str(vault_path))
+    )
+    for path in candidates:
+        results.append(ingest_file(path, vault_path))
+    return results

@@ -1,7 +1,7 @@
 # tests/test_ingest.py
 from pathlib import Path
 
-from book_summarizer.ingest import ingest_file
+from book_summarizer.ingest import ingest_file, ingest_directory
 from book_summarizer.vault import bootstrap_vault, is_ingested, read_queue
 
 
@@ -37,3 +37,29 @@ def test_ingest_pdf_origin_flags_low_quality(pdf_origin_epub: Path, tmp_vault: P
     assert result["conversion_quality"] == "low"
     # Still queued for analysis (fallback path will handle it in Tier 2)
     assert result["status"] == "queued"
+
+
+def test_ingest_directory_processes_all_epubs(tmp_path: Path, tmp_vault: Path):
+    from tests.conftest import _build_epub
+    # Build two EPUBs in nested subdirs (mirroring book-downloader layout)
+    a_dir = tmp_path / "Book A - Alice/"
+    b_dir = tmp_path / "Book B - Bob/"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    _build_epub(a_dir / "a.epub", "Book A", "Alice", "2020", sections=[
+        ("Cover", "x"), ("Chapter 1", "a "*40), ("Chapter 2", "b "*40), ("Chapter 3", "c "*40)
+    ])
+    _build_epub(b_dir / "b.epub", "Book B", "Bob", "2021", sections=[
+        ("Cover", "x"), ("Chapter 1", "a "*40), ("Chapter 2", "b "*40), ("Chapter 3", "c "*40)
+    ])
+
+    bootstrap_vault(tmp_vault)
+    results = ingest_directory(tmp_path, tmp_vault)
+    assert len(results) == 2
+    statuses = [r["status"] for r in results]
+    assert statuses == ["queued", "queued"]
+
+    # Second call is idempotent
+    results2 = ingest_directory(tmp_path, tmp_vault)
+    statuses2 = [r["status"] for r in results2]
+    assert statuses2 == ["skipped", "skipped"]
