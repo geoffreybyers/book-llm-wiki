@@ -130,3 +130,92 @@ def run_epub2md_convert(epub_path: Path, out_dir: Path, merge: bool = False) -> 
             f"Contents of {out_dir}: {list(out_dir.iterdir())}"
         )
     return produced
+
+
+from enum import Enum
+
+
+class SectionClass(str, Enum):
+    FRONT = "front"
+    CHAPTER = "chapter"
+    BACK = "back"
+
+
+# Patterns to identify non-chapter matter by section name.
+# Each pattern is a lowercase substring or regex that decides the class.
+_FRONT_PATTERNS = [
+    re.compile(r"^cover$"),
+    re.compile(r"^title page$"),
+    re.compile(r"^half title$"),
+    re.compile(r"^dedication$"),
+    re.compile(r"^epigraph$"),
+    re.compile(r"^welcome$"),
+    re.compile(r"^praise for\b"),
+    re.compile(r"^also by\b"),  # "also by X" at the start is front matter when it precedes chapters;
+    # but our heuristic treats 'also by' as back matter (see below). Handle via BACK list.
+    re.compile(r"^acknowledg[e]?ments?$"),  # can appear front OR back; when front, rare. default front.
+    re.compile(r"^foreword$"),
+    re.compile(r"^preface$"),
+    re.compile(r"^prologue$"),
+]
+
+_BACK_PATTERNS = [
+    re.compile(r"^notes$"),
+    re.compile(r"^footnotes$"),
+    re.compile(r"^endnotes$"),
+    re.compile(r"^index$"),
+    re.compile(r"^glossary$"),
+    re.compile(r"^bibliography$"),
+    re.compile(r"^references$"),
+    re.compile(r"^copyright$"),
+    re.compile(r"^colophon$"),
+    re.compile(r"^about the author$"),
+    re.compile(r"^about the publisher$"),
+    re.compile(r"^newsletter"),
+    re.compile(r"^newsletters"),
+    re.compile(r"^table of contents$"),
+    re.compile(r"^contents$"),
+    re.compile(r"^also by\b"),
+    re.compile(r"^appendix\b"),  # treat appendices as back matter for summarization purposes
+]
+
+
+_CHAPTER_PATTERNS = [
+    re.compile(r"^(chapter|chap\.?)\s+\d+\b", re.IGNORECASE),
+    re.compile(r"^\d+\s+\S", re.IGNORECASE),  # "1 The Surprising..."
+    re.compile(r"^introduction(:|$|\s)", re.IGNORECASE),
+    re.compile(r"^conclusion(:|$|\s)", re.IGNORECASE),
+    re.compile(r"^epilogue(:|$|\s)", re.IGNORECASE),
+    re.compile(r"^part\s+[ivx\d]+", re.IGNORECASE),  # PART 1, Part II
+    re.compile(r"^rule\s+#?\d+", re.IGNORECASE),     # Rule #1, Rule 2
+    re.compile(r"^the\s+\w+\s+law\b", re.IGNORECASE),
+]
+
+
+def classify_section(name: str) -> SectionClass:
+    """Heuristic classifier for an EPUB section name."""
+    n = (name or "").strip()
+    n_lower = n.lower()
+
+    # Front-matter wins first for exact-name matches that are unambiguously front.
+    for pat in _FRONT_PATTERNS:
+        if pat.match(n_lower):
+            # "also by" is front-pattern-looking but we've also listed it as back.
+            # Prefer back disposition because it typically appears after chapters
+            # in spine order.
+            for back_pat in _BACK_PATTERNS:
+                if back_pat.match(n_lower):
+                    return SectionClass.BACK
+            return SectionClass.FRONT
+
+    for pat in _BACK_PATTERNS:
+        if pat.match(n_lower):
+            return SectionClass.BACK
+
+    for pat in _CHAPTER_PATTERNS:
+        if pat.search(n):
+            return SectionClass.CHAPTER
+
+    # Unknown label → default to chapter (better to include uncertain sections
+    # than filter them out; synthesis will weight accordingly).
+    return SectionClass.CHAPTER
