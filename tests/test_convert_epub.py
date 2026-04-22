@@ -55,3 +55,35 @@ def test_classify_chapters_and_parts():
     assert classify_section("PART 1: The Idea") == SectionClass.CHAPTER
     assert classify_section("Rule #1: Work Deeply") == SectionClass.CHAPTER
     assert classify_section("The Fundamentals") == SectionClass.CHAPTER  # unknown → default chapter
+
+
+from book_summarizer.convert.epub import convert_epub_to_markdown
+
+
+def test_convert_normal_epub_produces_chapter_headings(normal_epub: Path, tmp_path: Path):
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(normal_epub, out)
+    text = out.read_text()
+
+    # All sections appear
+    assert "# Front Matter — Cover" in text
+    assert "# Front Matter — Title Page" in text
+    assert "# Chapter 1 — Chapter 1: Origins" in text
+    assert "# Chapter 2 — Chapter 2: Growth" in text
+    assert "# Chapter 3 — Chapter 3: Reflection" in text
+    assert "# Back Matter — Notes" in text
+    assert "# Back Matter — Copyright" in text
+
+    # Result metadata is correct
+    assert result.chapter_count == 3
+    assert result.conversion_quality == "high"
+
+
+def test_convert_pdf_origin_uses_merged_flat_mode(pdf_origin_epub: Path, tmp_path: Path):
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(pdf_origin_epub, out)
+    assert result.conversion_quality == "low"
+    assert result.chapter_count == 0  # unreliable — flat mode does not emit class-prefixed H1s
+    # File still exists with some content
+    assert out.exists()
+    assert out.stat().st_size > 0

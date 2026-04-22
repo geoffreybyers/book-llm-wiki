@@ -108,28 +108,43 @@ def epub_structure(epub_path: Path) -> list[dict]:
 
 
 def run_epub2md_convert(epub_path: Path, out_dir: Path, merge: bool = False) -> Path:
-    """Run `epub2md -c [--merge]` writing to out_dir. Returns the output directory path."""
+    """Run `epub2md -c [--merge]` on epub_path, copying results to out_dir.
+
+    epub2md creates output relative to the EPUB's directory, not the cwd.
+    This function wraps that behavior: we run epub2md on the original EPUB,
+    then copy the results to out_dir and return the path there.
+
+    In merge mode, we use the merged.md filename by convention.
+    """
     if shutil.which("epub2md") is None:
         raise RuntimeError("epub2md is not installed. Run: npm install -g epub2md")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = ["epub2md", "-c"]
     if merge:
-        cmd.append("-m")
+        cmd.append("-m=merged.md")
     cmd.append(str(epub_path))
 
-    # epub2md writes output in the current working directory based on the epub filename.
-    subprocess.run(cmd, check=True, cwd=out_dir, capture_output=True)
+    # epub2md writes output in a subdirectory next to the epub_path, named after the epub stem.
+    # Run from the epub's parent directory to ensure the subdirectory lands in the right place.
+    subprocess.run(cmd, check=True, cwd=str(epub_path.parent), capture_output=True)
 
     # epub2md creates a subdirectory named after the EPUB (without extension)
     epub_stem = epub_path.stem
-    produced = out_dir / epub_stem
-    if not produced.exists():
+    produced_at_source = epub_path.parent / epub_stem
+    if not produced_at_source.exists():
         raise RuntimeError(
-            f"epub2md did not produce expected output at {produced}. "
-            f"Contents of {out_dir}: {list(out_dir.iterdir())}"
+            f"epub2md did not produce expected output at {produced_at_source}. "
+            f"Contents of {epub_path.parent}: {list(epub_path.parent.iterdir())}"
         )
-    return produced
+
+    # Copy the produced directory to out_dir
+    final_dest = out_dir / epub_stem
+    if final_dest.exists():
+        shutil.rmtree(final_dest)
+    shutil.copytree(produced_at_source, final_dest)
+
+    return final_dest
 
 
 from enum import Enum
@@ -255,3 +270,98 @@ def is_pdf_origin(epub_path: Path) -> bool:
     if spine_count > 0 and toc_count >= spine_count * 3:
         return True
     return False
+
+
+@dataclass
+class ConversionResult:
+    chapter_count: int
+    conversion_quality: str  # 'high' or 'low'
+    mode: str  # 'structured' or 'flat'
+
+
+def _read_section_markdown(section_md_dir: Path, section_index: int) -> str:
+    """epub2md writes section .md files with a `NN-slugified_name.md` naming
+    convention. Pick the Nth file by leading number (1-indexed, matching our
+    navMap order)."""
+    candidates = sorted(section_md_dir.glob(f"{section_index:02d}-*.md"))
+    if not candidates:
+        # epub2md sometimes uses zero-padded or non-padded numbers; try plain int
+        candidates = sorted(section_md_dir.glob(f"{section_index}-*.md"))
+    if not candidates:
+        return ""
+    return candidates[0].read_text()
+
+
+def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResult:
+    """Convert an EPUB to a single chapter-structured markdown file.
+
+    Properly-structured EPUBs: one `# Chapter N — <Title>` per chapter, plus
+    `# Front Matter — <Title>` / `# Back Matter — <Title>` for everything else.
+
+    PDF-origin EPUBs: flat merge; no class-prefixed H1s emitted. Result
+    conversion_quality == 'low'.
+    """
+    import tempfile
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if is_pdf_origin(epub_path):
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            run_epub2md_convert(epub_path, td_path, merge=True)
+            # In merge mode, epub2md writes to <epub-stem>/merged.md
+            merged_dir = td_path / epub_path.stem
+            merged_md = merged_dir / "merged.md"
+            if not merged_md.exists():
+                # Fallback: look for any .md file
+                mds = list(merged_dir.glob("*.md"))
+                if not mds:
+                    raise RuntimeError(f"epub2md merge mode produced no markdown in {merged_dir}")
+                merged_md = mds[0]
+            out_path.write_text(merged_md.read_text())
+        return ConversionResult(chapter_count=0, conversion_quality="low", mode="flat")
+
+    # Structured mode
+    structure = epub_structure(epub_path)
+    if not structure:
+        # No NCX → fall back to flat merge, flagged low
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            run_epub2md_convert(epub_path, td_path, merge=True)
+            merged_dir = td_path / epub_path.stem
+            merged_md = merged_dir / "merged.md"
+            if merged_md.exists():
+                out_path.write_text(merged_md.read_text())
+            else:
+                # Fallback: look for any .md file
+                mds = list(merged_dir.glob("*.md"))
+                if mds:
+                    out_path.write_text(mds[0].read_text())
+        return ConversionResult(chapter_count=0, conversion_quality="low", mode="flat")
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        section_dir = run_epub2md_convert(epub_path, td_path, merge=False)
+
+        chapter_num = 0
+        parts: list[str] = []
+        for i, section in enumerate(structure, start=1):
+            name = section["name"]
+            cls = classify_section(name)
+            if cls == SectionClass.CHAPTER:
+                chapter_num += 1
+                heading = f"# Chapter {chapter_num} — {name}"
+            elif cls == SectionClass.FRONT:
+                heading = f"# Front Matter — {name}"
+            else:
+                heading = f"# Back Matter — {name}"
+            body = _read_section_markdown(section_dir, i)
+            parts.append(f"{heading}\n\n{body.strip()}\n")
+
+        out_path.write_text("\n".join(parts))
+
+    return ConversionResult(
+        chapter_count=chapter_num,
+        conversion_quality="high",
+        mode="structured",
+    )
