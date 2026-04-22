@@ -8,6 +8,8 @@ from book_summarizer.vault import (
     bootstrap_vault,
     write_raw_book,
     raw_book_path,
+    enqueue_for_analysis,
+    read_queue,
 )
 
 
@@ -86,3 +88,22 @@ def test_is_ingested_after_append(tmp_vault: Path):
     )
     append_collected_row(tmp_vault, row)
     assert is_ingested(tmp_vault, "Deep Work", "Cal Newport") is True
+
+
+def test_enqueue_and_read_queue(tmp_vault: Path):
+    bootstrap_vault(tmp_vault)
+    enqueue_for_analysis(tmp_vault, "Deep Work", "Cal Newport")
+    enqueue_for_analysis(tmp_vault, "Atomic Habits", "James Clear")
+    queue = read_queue(tmp_vault)
+    assert queue == [
+        {"title": "Deep Work", "author": "Cal Newport"},
+        {"title": "Atomic Habits", "author": "James Clear"},
+    ]
+
+
+def test_enqueue_is_deduplicated(tmp_vault: Path):
+    bootstrap_vault(tmp_vault)
+    enqueue_for_analysis(tmp_vault, "Deep Work", "Cal Newport")
+    enqueue_for_analysis(tmp_vault, "Deep Work", "Cal Newport")
+    queue = read_queue(tmp_vault)
+    assert len(queue) == 1

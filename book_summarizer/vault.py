@@ -251,3 +251,30 @@ def is_ingested(vault_path: Path, title: str, author: str) -> bool:
         if row["title"] == title and row["author"] == author:
             return True
     return False
+
+
+def read_queue(vault_path: Path) -> list[dict]:
+    q_file = Path(vault_path) / "analysis_queue.md"
+    if not q_file.exists():
+        return []
+    out = []
+    for line in q_file.read_text().splitlines():
+        if line.startswith("- "):
+            entry = line[2:].strip()
+            # Format: "Title - Author"
+            if " - " in entry:
+                title, author = entry.split(" - ", 1)
+                out.append({"title": title.strip(), "author": author.strip()})
+    return out
+
+
+def enqueue_for_analysis(vault_path: Path, title: str, author: str) -> None:
+    existing = read_queue(vault_path)
+    for row in existing:
+        if row["title"] == title and row["author"] == author:
+            return  # already queued
+    q_file = Path(vault_path) / "analysis_queue.md"
+    if not q_file.exists():
+        q_file.write_text(ANALYSIS_QUEUE_HEADER)
+    with q_file.open("a") as fh:
+        fh.write(f"- {title} - {author}\n")
