@@ -219,3 +219,39 @@ def classify_section(name: str) -> SectionClass:
     # Unknown label → default to chapter (better to include uncertain sections
     # than filter them out; synthesis will weight accordingly).
     return SectionClass.CHAPTER
+
+
+def is_pdf_origin(epub_path: Path) -> bool:
+    """True if EPUB shows signs of being derived from a PDF.
+
+    Signals (any one triggers):
+      - <meta name="generator" content="pdftohtml..."> in the OPF
+      - Content files contain 'pdftohtml' string references
+      - spine item count << TOC chapter count (>= 3x more TOC entries)
+    """
+    info = epub_info(epub_path)
+    gen = (info.get("generator") or "").lower()
+    if "pdftohtml" in gen:
+        return True
+
+    with zipfile.ZipFile(epub_path) as zf:
+        # Scan HTML/XHTML content files for the pdftohtml marker
+        for name in zf.namelist():
+            if name.lower().endswith((".html", ".xhtml")):
+                try:
+                    body = _read_zip_text(zf, name)
+                except (UnicodeDecodeError, KeyError):
+                    continue
+                if "pdftohtml" in body.lower():
+                    return True
+
+        # Compare spine vs TOC counts
+        opf_path = _find_opf_path(zf)
+        opf = ET.fromstring(_read_zip_text(zf, opf_path))
+        spine = opf.find("opf:spine", OPF_NS)
+        spine_count = len(spine.findall("opf:itemref", OPF_NS)) if spine is not None else 0
+
+    toc_count = len(epub_structure(epub_path))
+    if spine_count > 0 and toc_count >= spine_count * 3:
+        return True
+    return False
