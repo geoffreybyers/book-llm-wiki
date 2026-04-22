@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
+import shutil
 from pathlib import Path
 
 
@@ -131,3 +133,45 @@ def bootstrap_vault(vault_path: Path) -> None:
         p = vault_path / name
         if not p.exists():
             p.write_text(content)
+
+
+def _safe_filename(s: str) -> str:
+    """Replace filesystem-unsafe characters for Obsidian compatibility.
+
+    Obsidian supports almost everything, but we normalize anyway:
+      - colon, slash, backslash, question mark, asterisk, less/greater, pipe → underscore
+      - strip leading/trailing whitespace
+    """
+    s = s.strip()
+    return re.sub(r'[:\\/?*<>|"]', "_", s)
+
+
+def raw_book_path(vault_path: Path, title: str, author: str) -> Path:
+    """Canonical raw/books/<Title> - <Author>.md path."""
+    safe_title = _safe_filename(title)
+    safe_author = _safe_filename(author) if author else "Unknown"
+    return Path(vault_path) / "raw" / "books" / f"{safe_title} - {safe_author}.md"
+
+
+def write_raw_book(
+    vault_path: Path,
+    title: str,
+    author: str,
+    source_markdown_path: Path | None,
+    content: str | None = None,
+) -> Path:
+    """Write the raw chapter-structured markdown for a book.
+
+    Either provide `source_markdown_path` (copied) or `content` (written directly).
+    """
+    dest = raw_book_path(vault_path, title, author)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if source_markdown_path is not None and content is not None:
+        raise ValueError("Provide source_markdown_path OR content, not both")
+    if source_markdown_path is not None:
+        shutil.copyfile(source_markdown_path, dest)
+    elif content is not None:
+        dest.write_text(content)
+    else:
+        raise ValueError("Provide source_markdown_path OR content")
+    return dest

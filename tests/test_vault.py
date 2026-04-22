@@ -1,7 +1,7 @@
 # tests/test_vault.py
 from pathlib import Path
 
-from book_summarizer.vault import bootstrap_vault
+from book_summarizer.vault import bootstrap_vault, write_raw_book, raw_book_path
 
 
 def test_bootstrap_creates_expected_structure(tmp_vault: Path):
@@ -25,3 +25,24 @@ def test_bootstrap_is_idempotent(tmp_vault: Path):
     # Run again; existing files should NOT be overwritten
     bootstrap_vault(tmp_vault)
     assert (tmp_vault / "collected.md").read_text() == "custom-content\n"
+
+
+def test_write_raw_book(tmp_vault: Path):
+    dest = write_raw_book(
+        vault_path=tmp_vault,
+        title="Deep Work",
+        author="Cal Newport",
+        source_markdown_path=None,
+        content="# Chapter 1 — Something\n\nBody.\n",
+    )
+    expected = tmp_vault / "raw" / "books" / "Deep Work - Cal Newport.md"
+    assert dest == expected
+    assert dest.read_text().startswith("# Chapter 1")
+
+
+def test_raw_book_path_slugs_unsafe_chars(tmp_vault: Path):
+    p = raw_book_path(tmp_vault, "Title: Subtitle / Slash", "Author Name")
+    # Colons and slashes are replaced for filesystem safety
+    assert ":" not in p.name
+    assert "/" not in p.name.replace(" - ", "")
+    assert p.parent == tmp_vault / "raw" / "books"
