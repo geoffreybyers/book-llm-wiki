@@ -138,11 +138,13 @@ def run_epub2md_convert(epub_path: Path, out_dir: Path, merge: bool = False) -> 
             f"Contents of {epub_path.parent}: {list(epub_path.parent.iterdir())}"
         )
 
-    # Copy the produced directory to out_dir
+    # Copy the produced directory to out_dir, then clean up the source-side
+    # artifact so we don't pollute the user's book-downloader folder.
     final_dest = out_dir / epub_stem
     if final_dest.exists():
         shutil.rmtree(final_dest)
     shutil.copytree(produced_at_source, final_dest)
+    shutil.rmtree(produced_at_source)
 
     return final_dest
 
