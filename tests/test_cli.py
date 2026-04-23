@@ -5,7 +5,7 @@ import sys
 
 def test_cli_help_lists_subcommands():
     result = subprocess.run(
-        [sys.executable, "-m", "book_summarizer", "--help"],
+        [sys.executable, "-m", "book_llm_wiki", "--help"],
         capture_output=True,
         text=True,
     )

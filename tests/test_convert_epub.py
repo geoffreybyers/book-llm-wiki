@@ -1,7 +1,7 @@
 # tests/test_convert_epub.py
 from pathlib import Path
 
-from book_summarizer.convert.epub import epub_info, epub_structure
+from book_llm_wiki.convert.epub import epub_info, epub_structure
 
 
 def test_epub_info_returns_title_and_author(normal_epub: Path):
@@ -24,7 +24,7 @@ def test_epub_structure_returns_ordered_sections(normal_epub: Path):
     ]
 
 
-from book_summarizer.convert.epub import classify_section, SectionClass
+from book_llm_wiki.convert.epub import classify_section, SectionClass
 
 
 def test_classify_obvious_front_matter():
@@ -57,7 +57,7 @@ def test_classify_chapters_and_parts():
     assert classify_section("The Fundamentals") == SectionClass.CHAPTER  # unknown → default chapter
 
 
-from book_summarizer.convert.epub import convert_epub_to_markdown
+from book_llm_wiki.convert.epub import convert_epub_to_markdown
 
 
 def test_convert_normal_epub_produces_chapter_headings(normal_epub: Path, tmp_path: Path):

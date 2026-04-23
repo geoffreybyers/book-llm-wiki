@@ -1,7 +1,7 @@
 # tests/test_convert_markdown.py
 from pathlib import Path
 
-from book_summarizer.convert.markdown import convert_markdown_to_markdown
+from book_llm_wiki.convert.markdown import convert_markdown_to_markdown
 
 
 def test_structured_markdown_passes_through(tmp_path: Path):

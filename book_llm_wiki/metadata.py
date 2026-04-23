@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from book_summarizer.convert.epub import epub_info
+from book_llm_wiki.convert.epub import epub_info
 
 
 def _parse_parent_dir(path: Path) -> dict:

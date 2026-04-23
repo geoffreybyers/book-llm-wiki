@@ -2,7 +2,7 @@
 import textwrap
 from pathlib import Path
 
-from book_summarizer.config import load_config
+from book_llm_wiki.config import load_config
 
 
 def test_load_config_from_single_file(tmp_path: Path):

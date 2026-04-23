@@ -1,8 +1,8 @@
 # tests/test_ingest.py
 from pathlib import Path
 
-from book_summarizer.ingest import ingest_file, ingest_directory
-from book_summarizer.vault import bootstrap_vault, is_ingested, read_queue
+from book_llm_wiki.ingest import ingest_file, ingest_directory
+from book_llm_wiki.vault import bootstrap_vault, is_ingested, read_queue
 
 
 def test_ingest_file_populates_vault(normal_epub: Path, tmp_vault: Path):

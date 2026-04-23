@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from book_summarizer.convert import convert, detect_format
+from book_llm_wiki.convert import convert, detect_format
 
 
 def test_detect_format_by_extension(tmp_path: Path):

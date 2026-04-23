@@ -5,8 +5,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from book_summarizer.config import load_config
-from book_summarizer.ingest import ingest_directory, ingest_file
+from book_llm_wiki.config import load_config
+from book_llm_wiki.ingest import ingest_directory, ingest_file
 
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "books.yaml"
@@ -30,7 +30,7 @@ def _cmd_ingest(args, cfg) -> int:
 
 
 def _cmd_status(args, cfg) -> int:
-    from book_summarizer.vault import _read_collected_rows
+    from book_llm_wiki.vault import _read_collected_rows
     rows = _read_collected_rows(cfg.vault_path)
     if not rows:
         print("(no books ingested)")
@@ -48,7 +48,7 @@ def _cmd_status(args, cfg) -> int:
 def _cmd_reset(args, cfg) -> int:
     """Flip status from 'analyzed' back to 'queued' in collected.md,
     and re-add to analysis_queue.md."""
-    from book_summarizer.vault import _read_collected_rows, enqueue_for_analysis, COLLECTED_HEADER
+    from book_llm_wiki.vault import _read_collected_rows, enqueue_for_analysis, COLLECTED_HEADER
     key = args.book
     # Accept either "Title - Author" or just "Title"
     target_title = key.split(" - ")[0].strip()
@@ -90,7 +90,7 @@ def _cmd_reset(args, cfg) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="book-summarizer",
+        prog="book-llm-wiki",
         description="Ingest local books and queue them for LLM analysis.",
     )
     parser.add_argument(

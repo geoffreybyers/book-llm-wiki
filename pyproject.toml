@@ -16,11 +16,11 @@ librarything = [
 ]
 
 [project.scripts]
-book-summarizer = "book_summarizer.cli:main"
+book-llm-wiki = "book_llm_wiki.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["book_summarizer*"]
+include = ["book_llm_wiki*"]

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from book_summarizer.ingest import ingest_file
-from book_summarizer.vault import bootstrap_vault
+from book_llm_wiki.ingest import ingest_file
+from book_llm_wiki.vault import bootstrap_vault
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEEP_WORK = (

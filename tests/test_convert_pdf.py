@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from book_summarizer.convert.pdf import convert_pdf_to_markdown
+from book_llm_wiki.convert.pdf import convert_pdf_to_markdown
 
 
 def test_convert_pdf_requires_existing_file(tmp_path: Path):
@@ -24,8 +24,8 @@ def test_convert_pdf_flags_low_quality_when_few_headings(tmp_path: Path):
             returncode = 0
         return R()
 
-    with patch("book_summarizer.convert.pdf.shutil.which", return_value="/usr/bin/pandoc"), \
-         patch("book_summarizer.convert.pdf.subprocess.run", side_effect=fake_pandoc):
+    with patch("book_llm_wiki.convert.pdf.shutil.which", return_value="/usr/bin/pandoc"), \
+         patch("book_llm_wiki.convert.pdf.subprocess.run", side_effect=fake_pandoc):
         result = convert_pdf_to_markdown(src, out)
 
     assert result.conversion_quality == "low"
@@ -48,8 +48,8 @@ def test_convert_pdf_flags_high_quality_when_many_headings(tmp_path: Path):
             returncode = 0
         return R()
 
-    with patch("book_summarizer.convert.pdf.shutil.which", return_value="/usr/bin/pandoc"), \
-         patch("book_summarizer.convert.pdf.subprocess.run", side_effect=fake_pandoc):
+    with patch("book_llm_wiki.convert.pdf.shutil.which", return_value="/usr/bin/pandoc"), \
+         patch("book_llm_wiki.convert.pdf.subprocess.run", side_effect=fake_pandoc):
         result = convert_pdf_to_markdown(src, out)
 
     assert result.conversion_quality == "high"

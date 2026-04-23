@@ -1,7 +1,7 @@
 # tests/test_convert_epub_pdf_origin.py
 from pathlib import Path
 
-from book_summarizer.convert.epub import is_pdf_origin
+from book_llm_wiki.convert.epub import is_pdf_origin
 
 
 def test_detect_pdf_origin_via_generator(pdf_origin_epub: Path):

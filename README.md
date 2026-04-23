@@ -14,7 +14,7 @@ cross-linked knowledge graph.
 
 - **`/download-book`** — Claude Code agent that finds an EPUB on Anna's
   Archive, quality-checks it, and registers the book in LibraryThing.
-- **`/ingest-book`** — thin wrapper over the Python CLI (`book_summarizer`)
+- **`/ingest-book`** — thin wrapper over the Python CLI (`book_llm_wiki`)
   that converts EPUBs to chapter-structured markdown and queues them.
   Pure Python, no LLM calls.
 - **`/summarize-book`** — Opus 4.7 runs chapter-parallel over the queue
@@ -38,19 +38,22 @@ cross-linked knowledge graph.
 ## Install
 
 ```bash
-cd ~/dev/book-llm-wiki
+git clone https://github.com/geoffreybyers/book-llm-wiki
+cd book-llm-wiki
 pip install -e ".[dev]"
 # Optional: add ".[librarything]" if you want /download-book
 cp books.yaml.example books.yaml
 cp .env.example .env       # then fill in annas_api_key + LT creds (if using /download-book)
-ln -s ~/dev/book-llm-wiki/commands/summarize-book.md ~/.claude/commands/summarize-book.md
-ln -s ~/dev/book-llm-wiki/commands/ingest-book.md    ~/.claude/commands/ingest-book.md
-ln -s ~/dev/book-llm-wiki/commands/download-book.md  ~/.claude/commands/download-book.md
 ```
 
+The slash commands (`/download-book`, `/ingest-book`, `/summarize-book`)
+live at `.claude/commands/` and are auto-discovered by Claude Code when
+you run it from this repo — no symlinks needed. If you want them
+available globally, symlink the three files into `~/.claude/commands/`.
+
 Edit `books.yaml` to point `vault_path` at your Obsidian vault. The
-example paths (`~/obsidian/book summaries`, `~/dev/book-llm-wiki/downloads/`)
-are placeholders — replace with your own.
+example paths (`~/obsidian/book summaries`, `./downloads/`) are
+placeholders — replace with your own.
 
 ## Usage
 
@@ -58,7 +61,7 @@ From Claude Code:
 
 ```
 /download-book "How to Win Friends and Influence People"
-/ingest-book                                       # batch ingest ~/dev/book-llm-wiki/downloads/
+/ingest-book                                       # batch ingest ./downloads/
 /ingest-book status
 /summarize-book                                    # analyze next queued book
 /summarize-book 3 --lens business                  # analyze next 3 with business lens
@@ -67,10 +70,10 @@ From Claude Code:
 From the shell (bypasses Claude Code — useful for scripting and CI):
 
 ```bash
-python -m book_summarizer ingest path/to/book.epub
-python -m book_summarizer ingest --dir ~/dev/book-llm-wiki/downloads/
-python -m book_summarizer status
-python -m book_summarizer reset "Deep Work - Cal Newport"
+python -m book_llm_wiki ingest path/to/book.epub
+python -m book_llm_wiki ingest --dir ./downloads/
+python -m book_llm_wiki status
+python -m book_llm_wiki reset "Deep Work - Cal Newport"
 ```
 
 ## Analysis model

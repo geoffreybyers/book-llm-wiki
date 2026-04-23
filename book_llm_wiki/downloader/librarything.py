@@ -6,9 +6,9 @@ the LibraryThing catalog via browser automation. Persists browser session
 to ~/.lt-session so Cloudflare/login only happens on first run.
 
 Usage:
-    python -m book_summarizer.downloader.librarything search "book title"
-    python -m book_summarizer.downloader.librarything add "book title" "author"
-    python -m book_summarizer.downloader.librarything delete <book_id>
+    python -m book_llm_wiki.downloader.librarything search "book title"
+    python -m book_llm_wiki.downloader.librarything add "book title" "author"
+    python -m book_llm_wiki.downloader.librarything delete <book_id>
 
 All commands output JSON to stdout. Logs go to stderr.
 """
@@ -19,7 +19,7 @@ import time
 import json
 from pathlib import Path
 
-# Walk up from book_summarizer/downloader/librarything.py to the repo root
+# Walk up from book_llm_wiki/downloader/librarything.py to the repo root
 # (two levels up) so `.env` can be located regardless of invocation cwd.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SESSION_DIR = os.path.expanduser('~/.lt-session')
@@ -344,7 +344,7 @@ def cmd_delete(book_id):
 
 def main():
     if len(sys.argv) < 2:
-        print('Usage: python -m book_summarizer.downloader.librarything <command> [args...]', file=sys.stderr)
+        print('Usage: python -m book_llm_wiki.downloader.librarything <command> [args...]', file=sys.stderr)
         print('Commands:', file=sys.stderr)
         print('  search "book title"                     - Search catalog', file=sys.stderr)
         print('  add "title" "author"                      - Add book to Your Library', file=sys.stderr)
@@ -355,19 +355,19 @@ def main():
 
     if command == 'search':
         if len(sys.argv) < 3:
-            print('Usage: python -m book_summarizer.downloader.librarything search "book title"', file=sys.stderr)
+            print('Usage: python -m book_llm_wiki.downloader.librarything search "book title"', file=sys.stderr)
             sys.exit(1)
         cmd_search(sys.argv[2])
 
     elif command == 'add':
         if len(sys.argv) < 4:
-            print('Usage: python -m book_summarizer.downloader.librarything add "title" "author"', file=sys.stderr)
+            print('Usage: python -m book_llm_wiki.downloader.librarything add "title" "author"', file=sys.stderr)
             sys.exit(1)
         cmd_add(sys.argv[2], sys.argv[3])
 
     elif command == 'delete':
         if len(sys.argv) < 3:
-            print('Usage: python -m book_summarizer.downloader.librarything delete <book_id>', file=sys.stderr)
+            print('Usage: python -m book_llm_wiki.downloader.librarything delete <book_id>', file=sys.stderr)
             sys.exit(1)
         cmd_delete(sys.argv[2])
 

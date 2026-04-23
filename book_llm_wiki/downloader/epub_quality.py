@@ -2,7 +2,7 @@
 """Check whether an EPUB looks like a low-quality PDF-to-EPUB conversion.
 
 Usage:
-    python -m book_summarizer.downloader.epub_quality <path-to-file.epub>
+    python -m book_llm_wiki.downloader.epub_quality <path-to-file.epub>
 
 Exit codes:
     0  good
@@ -120,7 +120,7 @@ def check(path: Path) -> dict:
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print("usage: python -m book_summarizer.downloader.epub_quality <path-to-file.epub>", file=sys.stderr)
+        print("usage: python -m book_llm_wiki.downloader.epub_quality <path-to-file.epub>", file=sys.stderr)
         return 2
     p = Path(sys.argv[1])
     if not p.exists():

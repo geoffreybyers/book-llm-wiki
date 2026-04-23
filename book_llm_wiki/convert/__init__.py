@@ -4,9 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from book_summarizer.convert.epub import convert_epub_to_markdown
-from book_summarizer.convert.pdf import convert_pdf_to_markdown
-from book_summarizer.convert.markdown import convert_markdown_to_markdown
+from book_llm_wiki.convert.epub import convert_epub_to_markdown
+from book_llm_wiki.convert.pdf import convert_pdf_to_markdown
+from book_llm_wiki.convert.markdown import convert_markdown_to_markdown
 
 
 @dataclass

@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from book_summarizer.convert import convert
-from book_summarizer.metadata import extract_metadata
-from book_summarizer.vault import (
+from book_llm_wiki.convert import convert
+from book_llm_wiki.metadata import extract_metadata
+from book_llm_wiki.vault import (
     CollectedRow,
     append_collected_row,
     bootstrap_vault,

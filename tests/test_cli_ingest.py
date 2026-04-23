@@ -14,7 +14,7 @@ def test_cli_ingest_end_to_end(normal_epub: Path, tmp_vault: Path, tmp_path: Pat
     )
 
     result = subprocess.run(
-        [sys.executable, "-m", "book_summarizer", "--config", str(cfg),
+        [sys.executable, "-m", "book_llm_wiki", "--config", str(cfg),
          "ingest", str(normal_epub)],
         capture_output=True, text=True,
     )
@@ -31,13 +31,13 @@ def test_cli_status_prints_ingested_books(normal_epub: Path, tmp_vault: Path, tm
     )
     # Ingest first
     subprocess.run(
-        [sys.executable, "-m", "book_summarizer", "--config", str(cfg),
+        [sys.executable, "-m", "book_llm_wiki", "--config", str(cfg),
          "ingest", str(normal_epub)],
         check=True, capture_output=True,
     )
     # Now status
     result = subprocess.run(
-        [sys.executable, "-m", "book_summarizer", "--config", str(cfg), "status"],
+        [sys.executable, "-m", "book_llm_wiki", "--config", str(cfg), "status"],
         capture_output=True, text=True,
     )
     assert result.returncode == 0
@@ -52,7 +52,7 @@ def test_cli_reset_requeues_analyzed_book(normal_epub: Path, tmp_vault: Path, tm
         "lenses:\n  general: test\n"
     )
     subprocess.run(
-        [sys.executable, "-m", "book_summarizer", "--config", str(cfg),
+        [sys.executable, "-m", "book_llm_wiki", "--config", str(cfg),
          "ingest", str(normal_epub)],
         check=True, capture_output=True,
     )
@@ -62,7 +62,7 @@ def test_cli_reset_requeues_analyzed_book(normal_epub: Path, tmp_vault: Path, tm
     collected.write_text(text)
 
     result = subprocess.run(
-        [sys.executable, "-m", "book_summarizer", "--config", str(cfg),
+        [sys.executable, "-m", "book_llm_wiki", "--config", str(cfg),
          "reset", "The Test Book - Test Author"],
         capture_output=True, text=True,
     )

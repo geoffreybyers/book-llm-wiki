@@ -1,7 +1,7 @@
 # tests/test_vault.py
 from pathlib import Path
 
-from book_summarizer.vault import (
+from book_llm_wiki.vault import (
     append_collected_row,
     is_ingested,
     CollectedRow,

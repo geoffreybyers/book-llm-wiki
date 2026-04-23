@@ -43,7 +43,7 @@ Use the title as-is for searching.
 
 Run the LibraryThing search tool to check the user's catalog:
 ```bash
-python3 -m book_summarizer.downloader.librarything search "{title}"
+python3 -m book_llm_wiki.downloader.librarything search "{title}"
 ```
 
 This returns JSON with matching books and their collections. Parse the output:
@@ -51,7 +51,7 @@ This returns JSON with matching books and their collections. Parse the output:
 - **If the book is in the "library" collection** — it's already tracked. Proceed to Step 3.
 - **If the book is NOT in the catalog** — add it now:
   ```bash
-  python3 -m book_summarizer.downloader.librarything add "{Title}" "{Author}"
+  python3 -m book_llm_wiki.downloader.librarything add "{Title}" "{Author}"
   ```
   Then proceed to Step 3.
 
@@ -112,7 +112,7 @@ file "$REPO/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub"
 
 **Always** run the quality check on the downloaded file:
 ```bash
-python3 -m book_summarizer.downloader.epub_quality "$REPO/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub"
+python3 -m book_llm_wiki.downloader.epub_quality "$REPO/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub"
 ```
 
 The script prints JSON and exits 0 (good) or 1 (bad — PDF-conversion artifacts or broken metadata).
@@ -159,7 +159,7 @@ When the user asks to "download X missing books" (or "download all missing books
 
 Scrape the user's full LibraryThing catalog:
 ```bash
-python3 -m book_summarizer.downloader.librarything search ""
+python3 -m book_llm_wiki.downloader.librarything search ""
 ```
 
 Parse the JSON output. Filter to only books in the **"library"** collection.
@@ -214,6 +214,6 @@ Output a summary of:
 
 7. **Domain fallback.** If `annas-archive.gd` doesn't work for the API call, try `annas-archive.org`.
 
-8. **LibraryThing tool.** The `book_summarizer.downloader.librarything` module handles all LibraryThing operations. It outputs JSON to stdout and logs to stderr. Always parse the JSON output to determine results. The module uses Scrapling with a persistent browser session — first runs may take longer while solving Cloudflare.
+8. **LibraryThing tool.** The `book_llm_wiki.downloader.librarything` module handles all LibraryThing operations. It outputs JSON to stdout and logs to stderr. Always parse the JSON output to determine results. The module uses Scrapling with a persistent browser session — first runs may take longer while solving Cloudflare.
 
 9. **No markdown tracking files.** Do NOT create, read, or update `books-downloaded.md` or `books-to-download.md`. All book tracking is done through LibraryThing and the local `downloads/` folder.

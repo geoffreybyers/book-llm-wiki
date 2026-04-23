@@ -1,7 +1,7 @@
 # tests/test_metadata.py
 from pathlib import Path
 
-from book_summarizer.metadata import extract_metadata
+from book_llm_wiki.metadata import extract_metadata
 
 
 def test_extract_metadata_from_epub(normal_epub: Path):
