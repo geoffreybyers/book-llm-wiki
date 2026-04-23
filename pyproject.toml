@@ -11,6 +11,9 @@ dependencies = [
 dev = [
     "pytest>=7.0",
 ]
+librarything = [
+    "scrapling>=0.4",
+]
 
 [project.scripts]
 book-summarizer = "book_summarizer.cli:main"

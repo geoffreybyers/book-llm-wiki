@@ -1,60 +1,27 @@
 ---
-description: Book Summarizer — ingest local books into the vault (Tier 1) and run LLM analysis on the queue (Tier 2)
-argument-hint: "<ingest|analyze|status|reset> [args]"
+description: Book Summarizer — Tier 2 LLM analysis of books queued by /ingest-book
+argument-hint: "[N] [--match <slug>] [--lens <name>]"
 ---
 
 # /summarize-book
 
-You are the controller for the Book Summarizer two-tier pipeline. Parse `$ARGUMENTS` to dispatch to a subcommand. The first positional token is the subcommand name.
+Tier 2 of the book pipeline. Runs Opus 4.7 over books in the analysis queue and writes a compounding Obsidian LLM wiki. Tier 1 ingest is handled separately by `/ingest-book`.
 
 ## Usage
 
 ```
-/summarize-book ingest <path>                        Convert and queue one book
-/summarize-book ingest --dir <path>                  Batch ingest a directory (recursive, idempotent)
-/summarize-book ingest                               Default: batch ingest ~/dev/book-downloader/downloads/
-/summarize-book analyze [N] [--match <slug>] [--lens <name>]   Run LLM analysis on next N queued books
-/summarize-book status                               Show the collected.md dashboard
-/summarize-book reset "<Title> - <Author>"          Re-queue an already-analyzed book
-/summarize-book help                                 Show this usage
+/summarize-book                            Analyze the next queued book
+/summarize-book <N>                        Analyze the next N queued books in sequence
+/summarize-book --match <slug>             Pick the first queue entry whose title contains <slug>
+/summarize-book --lens <name>              Force-apply this lens (skip the interactive menu)
+/summarize-book help                       Show this usage
 ```
+
+Flags can combine: `/summarize-book 3 --lens business` analyzes the next 3 books, all with the business lens.
 
 ## Dispatch rule
 
-Inspect `$ARGUMENTS`. If it is empty OR the first token is `help`, `-h`, or `--help`, print the Usage block above verbatim and exit. Otherwise, match the first token against one of the subcommands and follow the matching section below. If the first token matches nothing, print `(unknown subcommand: <token>)` then the Usage block, and exit.
-
----
-
-# Subcommand: ingest
-
-Tier 1. Shells out to the existing Python CLI — no LLM calls, no Opus quota.
-
-1. Strip the leading `ingest` token from `$ARGUMENTS`. Call what remains `rest`.
-2. Dispatch by shape of `rest`:
-   - `rest` is empty → run `python3 -m book_summarizer ingest --dir ~/dev/book-downloader/downloads/`
-   - `rest` starts with `--dir <path>` → run `python3 -m book_summarizer ingest --dir <path>`
-   - `rest` is a single path → run `python3 -m book_summarizer ingest <path>`
-3. Print the CLI's stdout verbatim. Print stderr if non-zero exit.
-
----
-
-# Subcommand: status
-
-Run `python3 -m book_summarizer status`. Print stdout verbatim. No other work.
-
----
-
-# Subcommand: reset
-
-1. Strip the leading `reset` token from `$ARGUMENTS`. Call what remains `book`.
-2. If `book` is empty, print `(reset requires a book identifier — try /summarize-book status to see options)` and exit.
-3. Run `python3 -m book_summarizer reset "<book>"`. Print stdout verbatim.
-
----
-
-# Subcommand: analyze
-
-Tier 2. LLM analysis using Opus 4.7 quota. Everything below describes this subcommand.
+If `$ARGUMENTS` starts with `help`, `-h`, or `--help`, print the Usage block above verbatim and exit. Otherwise proceed to Phase 1.
 
 ## Phase 1 — Load configuration and resolve book
 
@@ -65,7 +32,7 @@ Tier 2. LLM analysis using Opus 4.7 quota. Everything below describes this subco
    - `lenses` (dict of lens name → prompt fragment)
    - `overrides` (per-book lens picks)
 
-2. Strip the leading `analyze` token from `$ARGUMENTS`. Parse what remains:
+2. Parse `$ARGUMENTS`:
    - First positional arg: `count` (default 1)
    - `--match <slug>`: pick the first queue entry whose `Title - Author` contains `<slug>` (case-insensitive) instead of popping oldest
    - `--lens <name>`: force-apply this lens, skip the interactive menu

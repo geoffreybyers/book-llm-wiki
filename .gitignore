@@ -12,6 +12,15 @@ build/
 books.yaml
 books.local.yaml
 .env
+.env.*
+!.env.example
+.claude/settings.local.json
+
+# Downloaded books (not redistributable)
+downloads/
+
+# Playwright/MCP session artifacts
+.playwright-mcp/
 
 # Logs
 logs/
