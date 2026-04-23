@@ -1,5 +1,5 @@
 # tests/test_smoke_real_books.py
-"""Optional smoke tests against real EPUBs from ~/dev/book-llm-wiki/downloads/.
+"""Optional smoke tests against real EPUBs from ``<repo>/downloads/``.
 
 These tests validate end-to-end behavior against actual books. They skip if
 the books are not present locally (e.g. CI).
@@ -11,9 +11,12 @@ import pytest
 from book_summarizer.ingest import ingest_file
 from book_summarizer.vault import bootstrap_vault
 
-DEEP_WORK = Path(
-    "/home/administrator/dev/book-llm-wiki/downloads/Deep Work - Cal Newport/"
-    "Deep Work - Cal Newport - 8e4567c95342c815b075cf9376542d33.epub"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEEP_WORK = (
+    REPO_ROOT
+    / "downloads"
+    / "Deep Work - Cal Newport"
+    / "Deep Work - Cal Newport - 8e4567c95342c815b075cf9376542d33.epub"
 )
 
 

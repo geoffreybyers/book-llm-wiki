@@ -16,6 +16,16 @@ You will receive one of:
 3. **A LibraryThing URL** — e.g., `https://www.librarything.com/work/5494` or `https://www.librarything.com/isbn/0671027034`
 4. **A "download missing books" request** — e.g., "download 5 missing books" or "download all missing books". This means: find books in the user's LibraryThing "Your Library" that are not in the local downloads folder, and download them. See the **Batch Download Missing Books** section below.
 
+## Paths
+
+Every shell snippet below uses `$REPO` for the repo root. Set it once at the start of your session (it works from any subdirectory of a clone):
+
+```bash
+REPO="$(git rev-parse --show-toplevel)"
+```
+
+All downloads live under `$REPO/downloads/` and the API key is read from `$REPO/.env`.
+
 ## Single Book Workflow
 
 ### Step 1: Determine Book Title and Author
@@ -51,7 +61,7 @@ If the search returns multiple matches, show them to the user and ask which one 
 
 Check the local downloads folder for an existing copy:
 ```bash
-ls "/home/administrator/dev/book-llm-wiki/downloads/" | grep -i "{partial title}"
+ls "$REPO/downloads/" | grep -i "{partial title}"
 ```
 
 - **If a matching folder exists with an epub file that does NOT end in `.DELETE.epub`** — tell the user it's already downloaded. **Stop.**
@@ -62,7 +72,7 @@ ls "/home/administrator/dev/book-llm-wiki/downloads/" | grep -i "{partial title}
 
 #### 4a. Create Output Folder
 ```bash
-mkdir -p "/home/administrator/dev/book-llm-wiki/downloads/{Title} - {Author}"
+mkdir -p "$REPO/downloads/{Title} - {Author}"
 ```
 
 Use clean title and author (no special characters that would break folder names).
@@ -80,29 +90,29 @@ Use the `annas-archive` MCP `search` tool:
 If the first page of results doesn't have a good match, use the `page` parameter to check page 2.
 
 #### 4c. Download EPUB
-Once you have the MD5 hash of the best result, get a direct download URL. The Anna's Archive API key is stored in `/home/administrator/dev/book-llm-wiki/.env` under `annas_api_key:` — load it before each call:
+Once you have the MD5 hash of the best result, get a direct download URL. The Anna's Archive API key is stored in `$REPO/.env` under `annas_api_key:` — load it before each call:
 
 ```bash
-ANNAS_KEY=$(grep '^annas_api_key:' /home/administrator/dev/book-llm-wiki/.env | cut -d: -f2)
+ANNAS_KEY=$(grep '^annas_api_key:' $REPO/.env | cut -d: -f2)
 curl -s "https://annas-archive.gd/dyn/api/fast_download.json?md5={MD5}&key=$ANNAS_KEY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('download_url','ERROR')); print('Downloads left:', d['account_fast_download_info']['downloads_left'])"
 ```
 
 Then download the file:
 ```bash
-curl -L -o "/home/administrator/dev/book-llm-wiki/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub" "{download_url}"
+curl -L -o "$REPO/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub" "{download_url}"
 ```
 
 Verify the file is a valid epub (not an HTML error page):
 ```bash
-ls -la "/home/administrator/dev/book-llm-wiki/downloads/{Title} - {Author}/"
-file "/home/administrator/dev/book-llm-wiki/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub"
+ls -la "$REPO/downloads/{Title} - {Author}/"
+file "$REPO/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub"
 ```
 
 #### 4d. Quality Check
 
 **Always** run the quality check on the downloaded file:
 ```bash
-python3 -m book_summarizer.downloader.epub_quality "/home/administrator/dev/book-llm-wiki/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub"
+python3 -m book_summarizer.downloader.epub_quality "$REPO/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub"
 ```
 
 The script prints JSON and exits 0 (good) or 1 (bad — PDF-conversion artifacts or broken metadata).
@@ -118,8 +128,8 @@ After a new download passes the quality check:
 1. Identify the previous epub file(s) in the same folder.
 2. Rename each previous file by replacing the `.epub` extension with `.DELETE.epub`:
    ```bash
-   mv "/home/administrator/dev/book-llm-wiki/downloads/{Title} - {Author}/{old name}.epub" \
-      "/home/administrator/dev/book-llm-wiki/downloads/{Title} - {Author}/{old name}.DELETE.epub"
+   mv "$REPO/downloads/{Title} - {Author}/{old name}.epub" \
+      "$REPO/downloads/{Title} - {Author}/{old name}.DELETE.epub"
    ```
 3. Do **not** delete the old file — the user reviews and deletes manually.
 4. In the report (Step 6), call out the renamed file so the user knows what to delete.
@@ -158,7 +168,7 @@ Parse the JSON output. Filter to only books in the **"library"** collection.
 
 List all folders in the downloads directory:
 ```bash
-ls "/home/administrator/dev/book-llm-wiki/downloads/"
+ls "$REPO/downloads/"
 ```
 
 ### Step 3: Find Missing Books
@@ -196,11 +206,11 @@ Output a summary of:
 
 5. **If the API returns an error or null download_url**, try a different `domain_index` (0-10):
    ```bash
-   ANNAS_KEY=$(grep '^annas_api_key:' /home/administrator/dev/book-llm-wiki/.env | cut -d: -f2)
+   ANNAS_KEY=$(grep '^annas_api_key:' $REPO/.env | cut -d: -f2)
    curl -s "https://annas-archive.gd/dyn/api/fast_download.json?md5={MD5}&key=$ANNAS_KEY&domain_index=1"
    ```
 
-6. **File naming.** Save files as `{Title} - {Author} - {MD5}.epub` and `{Title} - {Author} - {MD5}.pdf` in a folder named `{Title} - {Author}` inside `/home/administrator/dev/book-llm-wiki/downloads/`. Including the MD5 in filenames avoids conflicts when downloading alternative versions of the same book.
+6. **File naming.** Save files as `{Title} - {Author} - {MD5}.epub` and `{Title} - {Author} - {MD5}.pdf` in a folder named `{Title} - {Author}` inside `$REPO/downloads/`. Including the MD5 in filenames avoids conflicts when downloading alternative versions of the same book.
 
 7. **Domain fallback.** If `annas-archive.gd` doesn't work for the API call, try `annas-archive.org`.
 

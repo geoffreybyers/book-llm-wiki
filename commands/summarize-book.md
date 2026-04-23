@@ -25,7 +25,7 @@ If `$ARGUMENTS` starts with `help`, `-h`, or `--help`, print the Usage block abo
 
 ## Phase 1 — Load configuration and resolve book
 
-1. Read `/home/administrator/dev/book-llm-wiki/books.yaml` (fall back to `books.yaml.example` if missing). Extract:
+1. Read `books.yaml` at the repo root (fall back to `books.yaml.example` if missing). Extract:
    - `vault_path` (default `~/obsidian/book summaries`)
    - `max_parallel_chapters` (default 5)
    - `min_chapters_for_map_reduce`, `max_chapter_share_of_book`, `max_chapters` (fallback thresholds)
