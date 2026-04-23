@@ -44,17 +44,21 @@ def test_write_raw_book(tmp_vault: Path):
         source_markdown_path=None,
         content="# Chapter 1 — Something\n\nBody.\n",
     )
-    expected = tmp_vault / "raw" / "books" / "Deep Work - Cal Newport.md"
+    expected = tmp_vault / "raw" / "books" / "Deep Work - Cal Newport" / "Deep Work - Cal Newport.md"
     assert dest == expected
     assert dest.read_text().startswith("# Chapter 1")
 
 
 def test_raw_book_path_slugs_unsafe_chars(tmp_vault: Path):
     p = raw_book_path(tmp_vault, "Title: Subtitle / Slash", "Author Name")
-    # Colons and slashes are replaced for filesystem safety
+    # Colons and slashes are replaced for filesystem safety in both the
+    # file name and the per-book subdirectory name.
     assert ":" not in p.name
-    assert "/" not in p.name.replace(" - ", "")
-    assert p.parent == tmp_vault / "raw" / "books"
+    assert ":" not in p.parent.name
+    # The subdirectory name matches the book stem (minus the .md extension)
+    assert p.parent.name == p.stem
+    # Subdirectory lives directly under raw/books/
+    assert p.parent.parent == tmp_vault / "raw" / "books"
 
 
 def test_append_collected_row_writes_entry(tmp_vault: Path):

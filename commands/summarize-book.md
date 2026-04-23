@@ -43,7 +43,7 @@ Wait for the user to respond. If they press enter, use `general`.
 
 ## Phase 3 — Chapter detection
 
-1. Read the raw markdown from `{vault_path}/raw/books/<Title> - <Author>.md`.
+1. Read the raw markdown from `{vault_path}/raw/books/<Title> - <Author>/<Title> - <Author>.md`. Each book lives in its own subdirectory alongside an `images/` folder.
 
 2. Split on `^# ` boundaries. Each H1 heading starts a new section.
 
@@ -111,7 +111,7 @@ created: {today}
 updated: {today}
 type: book
 tags: [<from SCHEMA.md taxonomy; pick 1-3 genre tags + applicable meta tags>]
-raw_path: raw/books/{Title} - {Author}.md
+raw_path: raw/books/{Title} - {Author}/{Title} - {Author}.md
 isbn: ''
 pages: ''
 summary_mode: {map-reduce | single-pass}

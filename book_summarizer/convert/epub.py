@@ -307,6 +307,14 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    def _copy_images(from_dir: Path) -> None:
+        src_images = from_dir / "images"
+        if src_images.is_dir():
+            dst_images = out_path.parent / "images"
+            if dst_images.exists():
+                shutil.rmtree(dst_images)
+            shutil.copytree(src_images, dst_images)
+
     if is_pdf_origin(epub_path):
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
@@ -321,6 +329,7 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
                     raise RuntimeError(f"epub2md merge mode produced no markdown in {merged_dir}")
                 merged_md = mds[0]
             out_path.write_text(merged_md.read_text())
+            _copy_images(merged_dir)
         return ConversionResult(chapter_count=0, conversion_quality="low", mode="flat")
 
     # Structured mode
@@ -339,6 +348,7 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
                 mds = list(merged_dir.glob("*.md"))
                 if mds:
                     out_path.write_text(mds[0].read_text())
+            _copy_images(merged_dir)
         return ConversionResult(chapter_count=0, conversion_quality="low", mode="flat")
 
     with tempfile.TemporaryDirectory() as td:
@@ -361,6 +371,7 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
             parts.append(f"{heading}\n\n{body.strip()}\n")
 
         out_path.write_text("\n".join(parts))
+        _copy_images(section_dir)
 
     return ConversionResult(
         chapter_count=chapter_num,

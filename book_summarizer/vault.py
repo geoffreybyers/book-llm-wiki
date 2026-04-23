@@ -148,10 +148,16 @@ def _safe_filename(s: str) -> str:
 
 
 def raw_book_path(vault_path: Path, title: str, author: str) -> Path:
-    """Canonical raw/books/<Title> - <Author>.md path."""
+    """Canonical raw/books/<Title> - <Author>/<Title> - <Author>.md path.
+
+    Each book lives in its own subdirectory so converter-emitted images
+    (referenced as `./images/foo.jpg` in the markdown) resolve correctly
+    and don't collide across books.
+    """
     safe_title = _safe_filename(title)
     safe_author = _safe_filename(author) if author else "Unknown"
-    return Path(vault_path) / "raw" / "books" / f"{safe_title} - {safe_author}.md"
+    stem = f"{safe_title} - {safe_author}"
+    return Path(vault_path) / "raw" / "books" / stem / f"{stem}.md"
 
 
 def write_raw_book(

@@ -20,7 +20,7 @@ def test_cli_ingest_end_to_end(normal_epub: Path, tmp_vault: Path, tmp_path: Pat
     )
     assert result.returncode == 0, result.stderr
     assert "The Test Book" in result.stdout
-    assert (tmp_vault / "raw" / "books" / "The Test Book - Test Author.md").exists()
+    assert (tmp_vault / "raw" / "books" / "The Test Book - Test Author" / "The Test Book - Test Author.md").exists()
 
 
 def test_cli_status_prints_ingested_books(normal_epub: Path, tmp_vault: Path, tmp_path: Path):

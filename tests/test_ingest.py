@@ -15,7 +15,7 @@ def test_ingest_file_populates_vault(normal_epub: Path, tmp_vault: Path):
     assert result["status"] == "queued"
 
     # Raw file exists
-    raw = tmp_vault / "raw" / "books" / "The Test Book - Test Author.md"
+    raw = tmp_vault / "raw" / "books" / "The Test Book - Test Author" / "The Test Book - Test Author.md"
     assert raw.exists()
 
     # Collected and queue updated
