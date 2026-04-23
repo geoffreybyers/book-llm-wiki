@@ -58,7 +58,7 @@ Tier 2. LLM analysis using Opus 4.7 quota. Everything below describes this subco
 
 ## Phase 1 — Load configuration and resolve book
 
-1. Read `/home/administrator/dev/book-summarizer/books.yaml` (fall back to `books.yaml.example` if missing). Extract:
+1. Read `/home/administrator/dev/book-llm-wiki/books.yaml` (fall back to `books.yaml.example` if missing). Extract:
    - `vault_path` (default `~/obsidian/book summaries`)
    - `max_parallel_chapters` (default 5)
    - `min_chapters_for_map_reduce`, `max_chapter_share_of_book`, `max_chapters` (fallback thresholds)

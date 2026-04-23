@@ -139,7 +139,7 @@ def run_epub2md_convert(epub_path: Path, out_dir: Path, merge: bool = False) -> 
         )
 
     # Copy the produced directory to out_dir, then clean up the source-side
-    # artifact so we don't pollute the user's book-downloader folder.
+    # artifact so we don't pollute the source downloads folder.
     final_dest = out_dir / epub_stem
     if final_dest.exists():
         shutil.rmtree(final_dest)

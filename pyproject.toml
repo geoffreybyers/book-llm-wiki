@@ -1,5 +1,5 @@
 [project]
-name = "book-summarizer"
+name = "book-llm-wiki"
 version = "0.1.0"
 description = "Two-tier book-to-wiki pipeline: local CLI converts EPUBs, Claude Code slash command summarizes into an Obsidian LLM wiki."
 requires-python = ">=3.11"

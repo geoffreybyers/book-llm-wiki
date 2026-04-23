@@ -14,15 +14,15 @@ chapters in parallel and writes a compounding Obsidian LLM wiki.
 ## Install
 
 ```bash
-cd ~/dev/book-summarizer
+cd ~/dev/book-llm-wiki
 pip install -e ".[dev]"
 cp books.yaml.example books.yaml
-ln -s ~/dev/book-summarizer/commands/summarize-book.md ~/.claude/commands/summarize-book.md
+ln -s ~/dev/book-llm-wiki/commands/summarize-book.md ~/.claude/commands/summarize-book.md
 ```
 
 Edit `books.yaml` to point `vault_path` at your Obsidian vault (or any
 output directory). The example paths in this repo (`~/obsidian/book summaries`,
-`~/dev/book-downloader/downloads/`) are placeholders — replace with your own.
+`~/dev/book-llm-wiki/downloads/`) are placeholders — replace with your own.
 
 ## Usage
 
@@ -31,7 +31,7 @@ output directory). The example paths in this repo (`~/obsidian/book summaries`,
 python -m book_summarizer ingest path/to/book.epub
 
 # Batch ingest a directory
-python -m book_summarizer ingest --dir ~/dev/book-downloader/downloads/
+python -m book_summarizer ingest --dir ~/dev/book-llm-wiki/downloads/
 
 # Show queue status
 python -m book_summarizer status

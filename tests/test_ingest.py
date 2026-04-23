@@ -41,7 +41,7 @@ def test_ingest_pdf_origin_flags_low_quality(pdf_origin_epub: Path, tmp_vault: P
 
 def test_ingest_directory_processes_all_epubs(tmp_path: Path, tmp_vault: Path):
     from tests.conftest import _build_epub
-    # Build two EPUBs in nested subdirs (mirroring book-downloader layout)
+    # Build two EPUBs in nested subdirs (mirroring downloader layout)
     a_dir = tmp_path / "Book A - Alice/"
     b_dir = tmp_path / "Book B - Bob/"
     a_dir.mkdir()

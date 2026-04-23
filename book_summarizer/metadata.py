@@ -12,8 +12,8 @@ from book_summarizer.convert.epub import epub_info
 def _parse_parent_dir(path: Path) -> dict:
     """Parse the immediate parent directory name as 'Title - Author'.
 
-    The book-downloader convention is `~/downloads/{Title - Author}/<file>.epub`,
-    which is the user's curated source of truth for canonical naming. Splitting
+    The downloader convention is `~/downloads/{Title - Author}/<file>.epub`,
+    which is the curated source of truth for canonical naming. Splitting
     the parent dir on the FIRST ' - ' handles authors with hyphenated names and
     titles that contain em-dashes without the typical ' - ' spacing.
     """
@@ -59,29 +59,28 @@ def extract_metadata(path: Path) -> dict:
     """Return {'title': str, 'author': str, 'year': str | None}.
 
     Priority for (title, author): parent directory name `Title - Author`, then
-    file stem parsing, then embedded file metadata. The parent-dir convention
-    is the user's curated canonical naming and overrides EPUB OPF metadata,
-    which is routinely malformed (author in title, "Last, First" inversions).
-    EPUB/markdown-frontmatter year is still preferred since filenames rarely
-    carry it.
+    embedded file metadata (EPUB OPF / markdown frontmatter), then file-stem
+    parsing. The parent-dir convention is the curated canonical naming and
+    overrides EPUB OPF, which is routinely malformed. Filename is the weakest
+    signal, used only when neither parent dir nor embedded metadata yields a
+    title. Year always prefers embedded metadata since filenames rarely carry it.
     """
     path = Path(path)
     ext = path.suffix.lower()
 
     parent_guess = _parse_parent_dir(path)
     filename_guess = _parse_filename(path)
-    primary = parent_guess or filename_guess
 
-    embedded_year = None
+    embedded = {}
     if ext == ".epub":
         info = epub_info(path)
-        embedded_year = info.get("year")
+        embedded = {"title": info.get("title"), "author": info.get("author"), "year": info.get("year")}
     elif ext in {".md", ".markdown"}:
         fm = _extract_markdown_frontmatter(path)
-        embedded_year = fm.get("year")
+        embedded = {"title": fm.get("title"), "author": fm.get("author"), "year": fm.get("year")}
 
-    return {
-        "title": primary.get("title", ""),
-        "author": primary.get("author", ""),
-        "year": embedded_year or primary.get("year"),
-    }
+    title = parent_guess.get("title") or embedded.get("title") or filename_guess.get("title", "")
+    author = parent_guess.get("author") or embedded.get("author") or filename_guess.get("author", "")
+    year = embedded.get("year") or filename_guess.get("year")
+
+    return {"title": title, "author": author, "year": year}
