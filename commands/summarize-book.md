@@ -78,17 +78,19 @@ Tier 2. LLM analysis using Opus 4.7 quota. Everything below describes this subco
 
 For the current book `<Title> - <Author>`:
 
-1. If `overrides["<Title> - <Author>"].lens` exists, use that.
-2. Else if `--lens <name>` was passed, use that.
-3. Else present a menu to the user:
+1. If `overrides["<Title> - <Author>"].lens` exists, use that. Skip to Phase 3.
+2. Else if `--lens <name>` was passed, use that. Skip to Phase 3.
+3. Else auto-classify: read the first ~2000 words of `{vault_path}/raw/books/<Title> - <Author>/<Title> - <Author>.md` and pick one of `{general, self_help, business, philosophy, memoir, fiction}` based on the text — title, author, opening prose. Call this `{auto_lens}`.
+4. Present a menu to the user with the auto-pick as the default:
 
 ```
 Book: <Title> — <Author>
 Lenses available: general, self_help, business, philosophy, memoir, fiction
-Which lens for this book? [general]:
+Suggested: {auto_lens}  (based on opening text)
+Which lens for this book? [{auto_lens}]:
 ```
 
-Wait for the user to respond. If they press enter, use `general`.
+Wait for the user to respond. If they press enter, use `{auto_lens}`. If they type a different lens name from the allowed set, use that instead.
 
 ## Phase 3 — Chapter detection
 
