@@ -5,6 +5,12 @@ EPUBs into chapter-structured markdown and queues them for analysis. Tier 2
 is a Claude Code slash command (`/summarize-book`) that runs Opus 4.7 across
 chapters in parallel and writes a compounding Obsidian LLM wiki.
 
+## Requirements
+
+- Python 3.11+
+- [Claude Code](https://claude.com/claude-code) (for Tier 2 analysis)
+- An Obsidian vault (or any directory) to serve as the wiki output
+
 ## Install
 
 ```bash
@@ -13,6 +19,10 @@ pip install -e ".[dev]"
 cp books.yaml.example books.yaml
 ln -s ~/dev/book-summarizer/commands/summarize-book.md ~/.claude/commands/summarize-book.md
 ```
+
+Edit `books.yaml` to point `vault_path` at your Obsidian vault (or any
+output directory). The example paths in this repo (`~/obsidian/book summaries`,
+`~/dev/book-downloader/downloads/`) are placeholders — replace with your own.
 
 ## Usage
 
@@ -36,4 +46,9 @@ Then in Claude Code:
 /summarize-book
 ```
 
-See `docs/superpowers/specs/2026-04-22-book-summarizer-design.md` for the full design.
+See `docs/analysis-template.md` and `docs/lens-examples.md` for the analysis
+structure and available lenses.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
