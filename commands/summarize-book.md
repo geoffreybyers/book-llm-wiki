@@ -1,11 +1,60 @@
 ---
-description: Pop the next queued book, run Opus 4.7 chapter-level summarization in parallel, synthesize, and write the LLM-wiki pages
-argument-hint: "[count] [--match <slug>] [--lens <name>]"
+description: Book Summarizer — ingest local books into the vault (Tier 1) and run LLM analysis on the queue (Tier 2)
+argument-hint: "<ingest|analyze|status|reset> [args]"
 ---
 
 # /summarize-book
 
-You are the Tier 2 analysis engine for the Book Summarizer project. Your job is to take one (or N) queued books, run chapter-level summarization in parallel, synthesize the results, and update the Obsidian LLM-wiki vault.
+You are the controller for the Book Summarizer two-tier pipeline. Parse `$ARGUMENTS` to dispatch to a subcommand. The first positional token is the subcommand name.
+
+## Usage
+
+```
+/summarize-book ingest <path>                        Convert and queue one book
+/summarize-book ingest --dir <path>                  Batch ingest a directory (recursive, idempotent)
+/summarize-book ingest                               Default: batch ingest ~/dev/book-downloader/downloads/
+/summarize-book analyze [N] [--match <slug>] [--lens <name>]   Run LLM analysis on next N queued books
+/summarize-book status                               Show the collected.md dashboard
+/summarize-book reset "<Title> - <Author>"          Re-queue an already-analyzed book
+/summarize-book help                                 Show this usage
+```
+
+## Dispatch rule
+
+Inspect `$ARGUMENTS`. If it is empty OR the first token is `help`, `-h`, or `--help`, print the Usage block above verbatim and exit. Otherwise, match the first token against one of the subcommands and follow the matching section below. If the first token matches nothing, print `(unknown subcommand: <token>)` then the Usage block, and exit.
+
+---
+
+# Subcommand: ingest
+
+Tier 1. Shells out to the existing Python CLI — no LLM calls, no Opus quota.
+
+1. Strip the leading `ingest` token from `$ARGUMENTS`. Call what remains `rest`.
+2. Dispatch by shape of `rest`:
+   - `rest` is empty → run `python3 -m book_summarizer ingest --dir ~/dev/book-downloader/downloads/`
+   - `rest` starts with `--dir <path>` → run `python3 -m book_summarizer ingest --dir <path>`
+   - `rest` is a single path → run `python3 -m book_summarizer ingest <path>`
+3. Print the CLI's stdout verbatim. Print stderr if non-zero exit.
+
+---
+
+# Subcommand: status
+
+Run `python3 -m book_summarizer status`. Print stdout verbatim. No other work.
+
+---
+
+# Subcommand: reset
+
+1. Strip the leading `reset` token from `$ARGUMENTS`. Call what remains `book`.
+2. If `book` is empty, print `(reset requires a book identifier — try /summarize-book status to see options)` and exit.
+3. Run `python3 -m book_summarizer reset "<book>"`. Print stdout verbatim.
+
+---
+
+# Subcommand: analyze
+
+Tier 2. LLM analysis using Opus 4.7 quota. Everything below describes this subcommand.
 
 ## Phase 1 — Load configuration and resolve book
 
@@ -16,7 +65,7 @@ You are the Tier 2 analysis engine for the Book Summarizer project. Your job is 
    - `lenses` (dict of lens name → prompt fragment)
    - `overrides` (per-book lens picks)
 
-2. Parse `$ARGUMENTS`:
+2. Strip the leading `analyze` token from `$ARGUMENTS`. Parse what remains:
    - First positional arg: `count` (default 1)
    - `--match <slug>`: pick the first queue entry whose `Title - Author` contains `<slug>` (case-insensitive) instead of popping oldest
    - `--lens <name>`: force-apply this lens, skip the interactive menu
@@ -225,7 +274,7 @@ After each book, print a short summary:
 
 If `count > 1`, repeat for each book in turn. If `count > 1` AND any book in the sequence fails, stop and report which books remain in the queue.
 
-## Error handling
+## Error handling (analyze)
 
 - **Malformed Concepts/Entities bullets:** preserve model output with warning comment; do not attempt to create entity/concept pages from broken input.
 - **Rate limit or API failure mid-chapter:** save partial chapter summaries to `.partial/`, leave book in queue, report to user.
