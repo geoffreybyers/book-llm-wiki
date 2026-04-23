@@ -9,6 +9,7 @@ dist/
 build/
 
 # Local config
+books.yaml
 books.local.yaml
 .env
 
