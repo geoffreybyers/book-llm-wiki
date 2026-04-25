@@ -59,6 +59,22 @@ def check(path: Path) -> dict:
     reasons: list[str] = []
     score = 0  # higher = worse
 
+    # PDF-origin detection (shares logic with the convert pipeline so the
+    # downloader and the converter agree on what's "good"). Catches files
+    # that have clean publisher metadata but were ultimately derived from
+    # a PDF — over-segmented NCX, `pdftohtml` generator, or pdftohtml
+    # references in body content. Scoring this at 5 means a single positive
+    # signal here reaches the "bad" threshold on its own.
+    try:
+        from book_llm_wiki.convert.epub import is_pdf_origin
+        if is_pdf_origin(path):
+            score += 5
+            reasons.append("PDF-origin EPUB (would force flat-merge / single-pass downstream)")
+    except Exception:
+        # Don't fail the check if convert.epub can't be imported (e.g. when
+        # this module is run as a standalone script outside the package).
+        pass
+
     meta = extract_metadata(path)
     title = meta.get("title", "")
     author = meta.get("author(s)", "")
