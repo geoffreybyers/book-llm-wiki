@@ -394,10 +394,14 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
     pos_by_href = {href: i for i, href in enumerate(manifest_hrefs, start=1)}
     pos_by_basename = {Path(href).name: i for i, href in enumerate(manifest_hrefs, start=1)}
 
+    from urllib.parse import unquote
+
     def _resolve_position(src: str) -> int | None:
-        # NCX `src` may include a fragment and may be relative to a different
-        # directory than the manifest hrefs. Normalize and try several matches.
-        bare = src.split("#", 1)[0]
+        # NCX `src` may include a fragment, may be percent-encoded (e.g.
+        # `%40` for `@` — Project Gutenberg-derived EPUBs commonly do this),
+        # and may be relative to a different directory than the manifest
+        # hrefs. Normalize and try several matches.
+        bare = unquote(src.split("#", 1)[0])
         if bare in pos_by_href:
             return pos_by_href[bare]
         return pos_by_basename.get(Path(bare).name)

@@ -273,6 +273,57 @@ def test_convert_dedupes_ncx_entries_pointing_to_same_spine_file(tmp_path: Path)
     assert "BODY-OF-THIRD" in text[ch3:]
 
 
+def test_convert_resolves_percent_encoded_ncx_src(tmp_path: Path):
+    """Regression: NCX `src` attributes can be percent-encoded (Project
+    Gutenberg-derived EPUBs commonly use `%40` for `@` in their generated
+    URIs) while the manifest hrefs are not. Without urllib.unquote, every
+    NCX entry fails to resolve to a manifest position and the converter
+    drops them all — outputting 0 chapters even when the EPUB has a valid
+    72-entry NCX (real case: a Wealth of Nations EPUB packaged from
+    Gutenberg HTML).
+    """
+    import zipfile
+    from urllib.parse import quote
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, HTML_TEMPLATE, MIMETYPE,
+    )
+
+    # Manifest stores the href unencoded; NCX stores it percent-encoded.
+    manifest_href = "ch@1.xhtml"  # contains an @ that NCX will encode as %40
+    encoded_src = quote(manifest_href, safe="")  # → "ch%401.xhtml"
+    body = "BODY-OF-FIRST " * 30
+
+    manifest_items = f'    <item id="s1" href="{manifest_href}" media-type="application/xhtml+xml"/>'
+    spine_items = '    <itemref idref="s1"/>'
+    nav_points = NAV_POINT_TEMPLATE.format(
+        id="nav1", order=1, label="Chapter 1: First", src=encoded_src,
+    )
+
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="Encoded NCX Book", author="A", year="2024",
+        title_slug="encoded-ncx-book",
+        manifest_items=manifest_items,
+        spine_items=spine_items, extra_metadata="",
+    )
+    ncx_xml = NCX_TEMPLATE.format(title="Encoded NCX Book", nav_points=nav_points)
+
+    epub_path = tmp_path / "encoded.epub"
+    with zipfile.ZipFile(epub_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        zf.writestr(f"OEBPS/{manifest_href}", HTML_TEMPLATE.format(title="Chapter 1: First", body=body))
+
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+    assert result.chapter_count == 1, f"got {result.chapter_count} chapters"
+    assert "# Chapter 1 — Chapter 1: First" in text
+    assert "BODY-OF-FIRST" in text
+
+
 def test_is_pdf_origin_passes_rich_retail_nav(tmp_path: Path):
     """Regression: the spine-vs-NCX ratio check should not flag publisher
     EPUBs that have many sub-section fragment-anchors pointing into a small
