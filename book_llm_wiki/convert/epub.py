@@ -281,17 +281,40 @@ class ConversionResult:
     mode: str  # 'structured' or 'flat'
 
 
-def _read_section_markdown(section_md_dir: Path, section_index: int) -> str:
-    """epub2md writes section .md files with a `NN-slugified_name.md` naming
-    convention. Pick the Nth file by leading number (1-indexed, matching our
-    navMap order)."""
-    candidates = sorted(section_md_dir.glob(f"{section_index:02d}-*.md"))
-    if not candidates:
-        # epub2md sometimes uses zero-padded or non-padded numbers; try plain int
-        candidates = sorted(section_md_dir.glob(f"{section_index}-*.md"))
-    if not candidates:
-        return ""
-    return candidates[0].read_text()
+def _xhtml_manifest_hrefs(epub_path: Path) -> list[str]:
+    """Return xhtml manifest hrefs in document (manifest) order.
+
+    epub2md emits one section .md file per xhtml manifest item, numbered by
+    its position in the manifest — NOT the spine. (Verified empirically: a
+    Penguin EPUB had `Praise01` at manifest position 4 but spine position 25,
+    and epub2md numbered the Praise file `04-`.) Spine-order alignment fails
+    on any EPUB where the publisher reorders sections in the spine.
+    """
+    with zipfile.ZipFile(epub_path) as zf:
+        opf_path = _find_opf_path(zf)
+        opf = ET.fromstring(_read_zip_text(zf, opf_path))
+        manifest = opf.find("opf:manifest", OPF_NS)
+        if manifest is None:
+            return []
+        return [
+            it.attrib["href"]
+            for it in manifest.findall("opf:item", OPF_NS)
+            if it.attrib.get("media-type") == "application/xhtml+xml"
+            and "href" in it.attrib
+        ]
+
+
+def _section_body_for_position(section_md_dir: Path, position: int) -> str:
+    """Read epub2md's markdown for the given manifest position (1-indexed).
+
+    epub2md numbers files with varying zero-padding (`007-`, `07-`, or `7-`);
+    try each.
+    """
+    for pat in (f"{position:03d}-*.md", f"{position:02d}-*.md", f"{position}-*.md"):
+        candidates = sorted(section_md_dir.glob(pat))
+        if candidates:
+            return candidates[0].read_text()
+    return ""
 
 
 def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResult:
@@ -351,13 +374,32 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
             _copy_images(merged_dir)
         return ConversionResult(chapter_count=0, conversion_quality="low", mode="flat")
 
+    # Map NCX nav-point src hrefs to their position in the manifest (1-indexed,
+    # xhtml items only). epub2md emits files numbered by manifest position,
+    # so this is how we look up the right body for each NCX entry. Indexing
+    # NCX entries directly (as the original implementation did) mis-reads
+    # bodies whenever the manifest has xhtml items not in the NCX
+    # (halftitle pages, praise sections, divisional half-titles — common in
+    # Penguin Classics, HarperCollins releases, etc.).
+    manifest_hrefs = _xhtml_manifest_hrefs(epub_path)
+    pos_by_href = {href: i for i, href in enumerate(manifest_hrefs, start=1)}
+    pos_by_basename = {Path(href).name: i for i, href in enumerate(manifest_hrefs, start=1)}
+
+    def _resolve_position(src: str) -> int | None:
+        # NCX `src` may include a fragment and may be relative to a different
+        # directory than the manifest hrefs. Normalize and try several matches.
+        bare = src.split("#", 1)[0]
+        if bare in pos_by_href:
+            return pos_by_href[bare]
+        return pos_by_basename.get(Path(bare).name)
+
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         section_dir = run_epub2md_convert(epub_path, td_path, merge=False)
 
         chapter_num = 0
         parts: list[str] = []
-        for i, section in enumerate(structure, start=1):
+        for section in structure:
             name = section["name"]
             cls = classify_section(name)
             if cls == SectionClass.CHAPTER:
@@ -367,7 +409,8 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
                 heading = f"# Front Matter — {name}"
             else:
                 heading = f"# Back Matter — {name}"
-            body = _read_section_markdown(section_dir, i)
+            position = _resolve_position(section.get("src", ""))
+            body = _section_body_for_position(section_dir, position) if position else ""
             parts.append(f"{heading}\n\n{body.strip()}\n")
 
         out_path.write_text("\n".join(parts))
