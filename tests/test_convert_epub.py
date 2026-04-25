@@ -178,6 +178,163 @@ def test_convert_aligns_bodies_when_manifest_has_items_not_in_ncx(tmp_path: Path
     assert "BODY-OF-THIRD" in text[ch3:]
 
 
+def test_convert_dedupes_ncx_entries_pointing_to_same_spine_file(tmp_path: Path):
+    """Regression: rich retail EPUBs (Running Lean, Design of Everyday Things,
+    etc.) have NCX nav entries that fragment-anchor into the same chapter
+    files — e.g., 98 nav points referencing only 9 spine files. Without
+    dedupe, the converter emits one chapter heading per nav entry, all with
+    the same file body — producing massive duplication. Fix: each unique
+    spine position becomes one chapter; the first NCX entry that targets it
+    supplies the title.
+    """
+    # 3 spine items, each containing a chapter. NCX has 7 entries: each
+    # chapter is listed at the chapter level plus one or two sub-section
+    # fragment-anchors targeting the same file.
+    sections = [
+        ("Chapter 1: First", "BODY-OF-FIRST " * 30),
+        ("Chapter 2: Second", "BODY-OF-SECOND " * 30),
+        ("Chapter 3: Third", "BODY-OF-THIRD " * 30),
+    ]
+    spine_indices = [0, 1, 2]
+    # Custom NCX: chapter-level entries plus sub-section fragment anchors.
+    # We use _build_epub_with_layout's NCX builder, which expects a list of
+    # manifest indices, but we want fragment-anchored entries — drop down
+    # to constructing the EPUB directly.
+    import zipfile
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, HTML_TEMPLATE, MIMETYPE,
+    )
+
+    manifest_items = []
+    spine_items = []
+    html_files = {}
+    for i, (label, body) in enumerate(sections, start=1):
+        item_id = f"s{i}"
+        href = f"section-{i}.xhtml"
+        manifest_items.append(f'    <item id="{item_id}" href="{href}" media-type="application/xhtml+xml"/>')
+        spine_items.append(f'    <itemref idref="{item_id}"/>')
+        html_files[href] = HTML_TEMPLATE.format(title=label, body=body)
+
+    # 7 NCX entries: Ch1, Ch1#sec1, Ch2, Ch2#sec1, Ch2#sec2, Ch3, Ch3#sec1
+    nav_specs = [
+        ("Chapter 1: First",         "section-1.xhtml"),
+        ("1.1 First subsection",     "section-1.xhtml#sec1"),
+        ("Chapter 2: Second",        "section-2.xhtml"),
+        ("2.1 Second subsection a",  "section-2.xhtml#sec1"),
+        ("2.2 Second subsection b",  "section-2.xhtml#sec2"),
+        ("Chapter 3: Third",         "section-3.xhtml"),
+        ("3.1 Third subsection",     "section-3.xhtml#sec1"),
+    ]
+    nav_points = [
+        NAV_POINT_TEMPLATE.format(id=f"nav{i}", order=i, label=label, src=src)
+        for i, (label, src) in enumerate(nav_specs, start=1)
+    ]
+
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="NCX Fragment Book",
+        author="Test Author",
+        year="2024",
+        title_slug="ncx-fragment-book",
+        manifest_items="\n".join(manifest_items),
+        spine_items="\n".join(spine_items),
+        extra_metadata="",
+    )
+    ncx_xml = NCX_TEMPLATE.format(title="NCX Fragment Book", nav_points="\n".join(nav_points))
+
+    epub_path = tmp_path / "fragment.epub"
+    with zipfile.ZipFile(epub_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+
+    # Three unique spine files → exactly three chapter headings.
+    assert result.chapter_count == 3, f"expected 3 chapters, got {result.chapter_count}"
+    assert text.count("# Chapter 1 — Chapter 1: First") == 1
+    assert text.count("# Chapter 2 — Chapter 2: Second") == 1
+    assert text.count("# Chapter 3 — Chapter 3: Third") == 1
+    # Sub-section nav entries should not have produced their own chapters.
+    assert "1.1 First subsection" not in text
+    assert "2.1 Second subsection" not in text
+    # Each chapter has its OWN body (no duplication).
+    ch1 = text.index("# Chapter 1 — Chapter 1: First")
+    ch2 = text.index("# Chapter 2 — Chapter 2: Second")
+    ch3 = text.index("# Chapter 3 — Chapter 3: Third")
+    assert "BODY-OF-FIRST" in text[ch1:ch2]
+    assert "BODY-OF-FIRST" not in text[ch2:]   # not duplicated into Ch2
+    assert "BODY-OF-SECOND" in text[ch2:ch3]
+    assert "BODY-OF-THIRD" in text[ch3:]
+
+
+def test_is_pdf_origin_passes_rich_retail_nav(tmp_path: Path):
+    """Regression: the spine-vs-NCX ratio check should not flag publisher
+    EPUBs that have many sub-section fragment-anchors pointing into a small
+    set of chapter files. Real example: Don Norman's *Design of Everyday
+    Things* retail EPUB has 19 spine items and 77 NCX entries (4.1x ratio)
+    but every NCX entry fragment-anchors into the same 19 files. The fix
+    counts distinct file targets in NCX, not raw entry count.
+    """
+    from book_llm_wiki.convert.epub import is_pdf_origin
+    import zipfile
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, HTML_TEMPLATE, MIMETYPE,
+    )
+
+    # 4 spine files, 16 NCX entries (4x ratio) but all anchoring into the
+    # same 4 files.
+    sections = [
+        ("Chapter 1", "ch1 body"),
+        ("Chapter 2", "ch2 body"),
+        ("Chapter 3", "ch3 body"),
+        ("Chapter 4", "ch4 body"),
+    ]
+    manifest_items = []
+    spine_items = []
+    html_files = {}
+    for i, (label, body) in enumerate(sections, start=1):
+        item_id = f"s{i}"
+        href = f"section-{i}.xhtml"
+        manifest_items.append(f'    <item id="{item_id}" href="{href}" media-type="application/xhtml+xml"/>')
+        spine_items.append(f'    <itemref idref="{item_id}"/>')
+        html_files[href] = HTML_TEMPLATE.format(title=label, body=body)
+
+    nav_specs = []
+    for i in range(1, 5):
+        nav_specs.append((f"Chapter {i}", f"section-{i}.xhtml"))
+        for j in range(1, 4):
+            nav_specs.append((f"{i}.{j} Sub", f"section-{i}.xhtml#sec{j}"))
+    nav_points = [
+        NAV_POINT_TEMPLATE.format(id=f"nav{k}", order=k, label=label, src=src)
+        for k, (label, src) in enumerate(nav_specs, start=1)
+    ]
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="Rich Nav Book", author="A", year="2024",
+        title_slug="rich-nav-book",
+        manifest_items="\n".join(manifest_items),
+        spine_items="\n".join(spine_items), extra_metadata="",
+    )
+    ncx_xml = NCX_TEMPLATE.format(title="Rich Nav Book", nav_points="\n".join(nav_points))
+
+    epub_path = tmp_path / "richnav.epub"
+    with zipfile.ZipFile(epub_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+
+    assert not is_pdf_origin(epub_path), "rich-nav retail EPUB must not be flagged"
+
+
 def test_convert_aligns_bodies_when_spine_reorders_manifest(tmp_path: Path):
     """Regression: epub2md numbers files by manifest order, but the spine
     can reorder items independently. A section at manifest position 4 may

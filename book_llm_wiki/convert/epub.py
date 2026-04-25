@@ -262,14 +262,23 @@ def is_pdf_origin(epub_path: Path) -> bool:
                 if "pdftohtml" in body.lower():
                     return True
 
-        # Compare spine vs TOC counts
+        # Compare spine vs distinct files referenced by NCX. Counting raw
+        # NCX entries (toc_count) catches rich retail navigation as a false
+        # positive — many publishers fragment-anchor sub-section entries
+        # into the same chapter files, producing NCX:spine ratios of 3-5
+        # without being PDF-derived. The real PDF symptom is NCX entries
+        # pointing to many *distinct* files outside the spine — i.e., the
+        # PDF→EPUB tool dumped each navigation target into its own micro
+        # file. So compare distinct file-targets in NCX (after stripping
+        # `#fragment`) to the spine size.
         opf_path = _find_opf_path(zf)
         opf = ET.fromstring(_read_zip_text(zf, opf_path))
         spine = opf.find("opf:spine", OPF_NS)
         spine_count = len(spine.findall("opf:itemref", OPF_NS)) if spine is not None else 0
 
-    toc_count = len(epub_structure(epub_path))
-    if spine_count > 0 and toc_count >= spine_count * 3:
+    nav_files = {s.get("src", "").split("#", 1)[0] for s in epub_structure(epub_path)}
+    nav_files.discard("")
+    if spine_count > 0 and len(nav_files) >= spine_count * 3:
         return True
     return False
 
@@ -393,13 +402,30 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
             return pos_by_href[bare]
         return pos_by_basename.get(Path(bare).name)
 
+    # Dedupe NCX entries by the spine position they target. Many retail
+    # EPUBs have rich NCX nav with sub-section fragment-anchors pointing
+    # into the same chapter file. Without dedupe, the converter emits one
+    # chapter heading per NCX entry, all with the same file content as
+    # body — producing massive duplication (e.g. 98 chapters × the same
+    # 6800-word body for Running Lean). Dedupe so each unique spine file
+    # gets exactly one chapter heading, taking the first NCX entry that
+    # targets it as the title.
+    seen_positions: set[int] = set()
+    deduped_structure: list[dict] = []
+    for section in structure:
+        position = _resolve_position(section.get("src", ""))
+        if position is None or position in seen_positions:
+            continue
+        seen_positions.add(position)
+        deduped_structure.append({**section, "_position": position})
+
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         section_dir = run_epub2md_convert(epub_path, td_path, merge=False)
 
         chapter_num = 0
         parts: list[str] = []
-        for section in structure:
+        for section in deduped_structure:
             name = section["name"]
             cls = classify_section(name)
             if cls == SectionClass.CHAPTER:
@@ -409,8 +435,7 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
                 heading = f"# Front Matter — {name}"
             else:
                 heading = f"# Back Matter — {name}"
-            position = _resolve_position(section.get("src", ""))
-            body = _section_body_for_position(section_dir, position) if position else ""
+            body = _section_body_for_position(section_dir, section["_position"])
             parts.append(f"{heading}\n\n{body.strip()}\n")
 
         out_path.write_text("\n".join(parts))
