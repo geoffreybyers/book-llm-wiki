@@ -373,17 +373,67 @@ def _xhtml_manifest_hrefs(epub_path: Path) -> list[str]:
         ]
 
 
-def _section_body_for_position(section_md_dir: Path, position: int) -> str:
+def _section_body_for_position(
+    section_md_dir: Path, position: int, skip_offset: int = 0
+) -> str:
     """Read epub2md's markdown for the given manifest position (1-indexed).
 
     epub2md numbers files with varying zero-padding (`007-`, `07-`, or `7-`);
-    try each.
+    try each. ``skip_offset`` (default 0) shifts the lookup left when epub2md
+    silently skips one or more leading manifest XHTML items — see
+    ``_epub2md_skip_offset``. Manifest positions at or below the offset
+    have no corresponding body file (the front-matter cover that epub2md
+    dropped) and return empty string.
     """
-    for pat in (f"{position:03d}-*.md", f"{position:02d}-*.md", f"{position}-*.md"):
+    effective = position - skip_offset
+    if effective < 1:
+        return ""
+    for pat in (f"{effective:03d}-*.md", f"{effective:02d}-*.md", f"{effective}-*.md"):
         candidates = sorted(section_md_dir.glob(pat))
         if candidates:
             return candidates[0].read_text()
     return ""
+
+
+def _epub2md_skip_offset(section_md_dir: Path, manifest_hrefs: list[str]) -> int:
+    """How many leading manifest XHTML items did epub2md silently skip?
+
+    epub2md numbers its output files by its own internal counter, which
+    matches the manifest XHTML position 1-for-1 — except when an EPUB places
+    its cover/titlepage XHTML at the OPF root (no subdirectory) while the
+    rest of the spine lives under e.g. ``OEBPS/xhtml/``. In that case
+    epub2md silently treats the root-level file as the cover and emits no
+    ``.md`` for it, shifting every subsequent file's number down by one.
+
+    Without compensation, every NCX-derived ``# Chapter N`` wrapper ends up
+    filled with the body of conceptual chapter N+1. Confirmed on Clear
+    Thinking (Shane Parrish, Penguin/Portfolio 2023) and Thinking, Fast and
+    Slow (Daniel Kahneman); affects ~half of the trade-publisher EPUBs in
+    the vault.
+
+    Returns the number of leading manifest entries to skip (0 if no shift
+    is needed).
+    """
+    md_count = sum(1 for _ in section_md_dir.glob("*.md"))
+    if md_count >= len(manifest_hrefs):
+        return 0
+    diff = len(manifest_hrefs) - md_count
+    # Only compensate for the well-characterized single-skip cover/titlepage
+    # case. Larger gaps (multiple skips, malformed EPUBs) are left alone so
+    # the caller can see empty bodies and investigate, rather than the fix
+    # silently re-aligning to the wrong position.
+    if diff != 1:
+        return 0
+    first_href = manifest_hrefs[0]
+    first_at_opf_root = "/" not in first_href
+    first_basename = Path(first_href).stem.lower()
+    looks_like_cover = any(
+        token in first_basename
+        for token in ("titlepage", "title_page", "cover", "halftitle", "half_title")
+    )
+    if first_at_opf_root and looks_like_cover:
+        return 1
+    return 0
 
 
 def convert_pages_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResult:
@@ -582,6 +632,11 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         td_path = Path(td)
         section_dir = run_epub2md_convert(epub_path, td_path, merge=False)
 
+        # epub2md silently drops a root-level cover/titlepage (Penguin,
+        # Portfolio, and many other trade-publisher EPUBs ship that way),
+        # which would shift every body off-by-one. Detect and compensate.
+        skip_offset = _epub2md_skip_offset(section_dir, manifest_hrefs)
+
         chapter_num = 0
         parts: list[str] = []
         for section in deduped_structure:
@@ -594,7 +649,9 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
                 heading = f"# Front Matter — {name}"
             else:
                 heading = f"# Back Matter — {name}"
-            body = _section_body_for_position(section_dir, section["_position"])
+            body = _section_body_for_position(
+                section_dir, section["_position"], skip_offset=skip_offset
+            )
             parts.append(f"{heading}\n\n{body.strip()}\n")
 
         out_path.write_text("\n".join(parts))

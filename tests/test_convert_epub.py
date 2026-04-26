@@ -273,6 +273,75 @@ def test_convert_dedupes_ncx_entries_pointing_to_same_spine_file(tmp_path: Path)
     assert "BODY-OF-THIRD" in text[ch3:]
 
 
+def test_epub2md_skip_offset_compensates_for_root_level_cover(tmp_path: Path):
+    """Regression: when manifest[0] XHTML lives at the OPF root and is named
+    cover/titlepage/halftitle, epub2md silently drops it and emits one fewer
+    `.md` file than the manifest's XHTML count, with its remaining files
+    numbered from 01 — shifting every body off-by-one. ``_epub2md_skip_offset``
+    detects the well-characterized single-skip case and returns 1.
+
+    Confirmed in the wild on Clear Thinking (Shane Parrish, Penguin/Portfolio
+    2023) and Thinking, Fast and Slow (Daniel Kahneman). Without the
+    compensation, every NCX-derived ``# Chapter N`` wrapper contains the
+    body of conceptual chapter N+1.
+    """
+    from book_llm_wiki.convert.epub import _epub2md_skip_offset
+
+    section_dir = tmp_path / "sections"
+    section_dir.mkdir()
+
+    # Manifest has 5 XHTML; epub2md produced 4 .md (it dropped manifest[0]).
+    manifest_root_titlepage = [
+        "titlepage.xhtml",                       # at OPF root
+        "OEBPS/xhtml/02_Title_Page.xhtml",
+        "OEBPS/xhtml/03_Preface.xhtml",
+        "OEBPS/xhtml/04_Introduction.xhtml",
+        "OEBPS/xhtml/05_Chapter_1.xhtml",
+    ]
+    for i, name in enumerate(["Title_Page", "Preface", "Introduction", "Chapter_1"], start=1):
+        (section_dir / f"{i:02d}-{name}.md").write_text(f"body of {name}")
+
+    assert _epub2md_skip_offset(section_dir, manifest_root_titlepage) == 1
+
+    # Same filenames but first XHTML is NOT at the OPF root → no shift
+    # (epub2md doesn't drop subdir-located files even when named cover).
+    manifest_subdir_titlepage = [
+        "OEBPS/xhtml/01_titlepage.xhtml",
+        "OEBPS/xhtml/02_Title_Page.xhtml",
+        "OEBPS/xhtml/03_Preface.xhtml",
+        "OEBPS/xhtml/04_Introduction.xhtml",
+        "OEBPS/xhtml/05_Chapter_1.xhtml",
+    ]
+    # md_count==4, manifest count==5, but first is not at root → no shift.
+    assert _epub2md_skip_offset(section_dir, manifest_subdir_titlepage) == 0
+
+    # Match between produced count and manifest count → no shift needed.
+    (section_dir / "05-Chapter_1.md").write_text("body of Chapter_1")
+    assert _epub2md_skip_offset(section_dir, manifest_root_titlepage) == 0
+
+
+def test_section_body_for_position_honors_skip_offset(tmp_path: Path):
+    """``_section_body_for_position`` must subtract ``skip_offset`` from the
+    1-indexed manifest position before globbing, and return empty when the
+    effective position falls below 1 (the dropped-cover case)."""
+    from book_llm_wiki.convert.epub import _section_body_for_position
+
+    section_dir = tmp_path / "sections"
+    section_dir.mkdir()
+    (section_dir / "01-Title_Page.md").write_text("body of Title_Page")
+    (section_dir / "02-Preface.md").write_text("body of Preface")
+    (section_dir / "03-Introduction.md").write_text("body of Introduction")
+
+    # Manifest pos 1 (the dropped cover) → empty after offset.
+    assert _section_body_for_position(section_dir, position=1, skip_offset=1) == ""
+    # Manifest pos 2 (Title Page) → body in 01-*.md after offset.
+    assert "Title_Page" in _section_body_for_position(section_dir, position=2, skip_offset=1)
+    # Manifest pos 4 (Introduction) → body in 03-*.md after offset.
+    assert "Introduction" in _section_body_for_position(section_dir, position=4, skip_offset=1)
+    # Skip offset 0 (no shift) → manifest pos 1 returns the first md.
+    assert "Title_Page" in _section_body_for_position(section_dir, position=1, skip_offset=0)
+
+
 def test_pages_origin_detected_by_generator(tmp_path: Path):
     """`is_pages_origin` should fire on Pages-generated EPUBs (their generator
     metadata reads "Pages Publishing macOS vN")."""
