@@ -273,6 +273,107 @@ def test_convert_dedupes_ncx_entries_pointing_to_same_spine_file(tmp_path: Path)
     assert "BODY-OF-THIRD" in text[ch3:]
 
 
+def test_pages_origin_detected_by_generator(tmp_path: Path):
+    """`is_pages_origin` should fire on Pages-generated EPUBs (their generator
+    metadata reads "Pages Publishing macOS vN")."""
+    from book_llm_wiki.convert.epub import is_pages_origin
+    sections = [("Cover", "ignored"), ("Chapter 1: First", "ignored")]
+    extra = '    <meta name="generator" content="Pages Publishing macOS v1.0"/>'
+    epub_path = tmp_path / "pages.epub"
+    from tests.conftest import _build_epub
+    _build_epub(epub_path, title="Pages Book", author="A", year="2024",
+                sections=sections, extra_metadata=extra)
+    assert is_pages_origin(epub_path)
+
+
+def test_pages_origin_not_falsely_detected(normal_epub: Path):
+    """A normal publisher EPUB should NOT be flagged as Pages-origin."""
+    from book_llm_wiki.convert.epub import is_pages_origin
+    assert not is_pages_origin(normal_epub)
+
+
+def test_extract_xhtml_text_strips_inline_spans(tmp_path: Path):
+    """`_extract_xhtml_text` recovers prose from Pages's inline-span-heavy
+    XHTML — the structure that epub2md silently drops."""
+    from book_llm_wiki.convert.epub import _extract_xhtml_text
+    pages_xhtml = """<html><body>
+    <h1 class="p1"><span id="ch3"/><span class="c1">SECTION II<br/></span><span class="c1 c2">Pricing</span></h1>
+    <p class="p3"><span class="c1">"Grow or Die" is a core tenet at our companies.</span></p>
+    <p class="p1"><span class="c1">Maintenance is a myth.</span></p>
+    </body></html>"""
+    text = _extract_xhtml_text(pages_xhtml)
+    assert "SECTION II" in text
+    assert "Pricing" in text
+    assert "Grow or Die" in text
+    assert "Maintenance is a myth" in text
+
+
+def test_convert_pages_epub_extracts_inline_span_content(tmp_path: Path):
+    """End-to-end: a Pages-style EPUB with content in inline spans should
+    convert with the actual prose extracted, not just the headings."""
+    import zipfile
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, MIMETYPE,
+    )
+
+    pages_html_template = """<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>{title}</title></head>
+<body><div class="body" style="white-space:pre-wrap;">
+<h1 class="p42"><span class="c1">{title}</span></h1>
+<p class="p1"><span class="c1">{body}</span></p>
+</div></body></html>"""
+
+    sections = [
+        ("Cover", "Cover content"),
+        ("Chapter 1: First", "BODY-OF-FIRST " * 30),
+        ("Chapter 2: Second", "BODY-OF-SECOND " * 30),
+    ]
+
+    manifest_items = []
+    spine_items = []
+    nav_points = []
+    html_files = {}
+    for i, (label, body) in enumerate(sections, start=1):
+        item_id = f"s{i}"
+        href = f"section-{i}.xhtml"
+        manifest_items.append(f'    <item id="{item_id}" href="{href}" media-type="application/xhtml+xml"/>')
+        spine_items.append(f'    <itemref idref="{item_id}"/>')
+        nav_points.append(NAV_POINT_TEMPLATE.format(id=item_id, order=i, label=label, src=href))
+        html_files[href] = pages_html_template.format(title=label, body=body)
+
+    extra_metadata = '    <meta name="generator" content="Pages Publishing macOS v1.0"/>'
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="Pages Book", author="A", year="2024", title_slug="pages-book",
+        manifest_items="\n".join(manifest_items),
+        spine_items="\n".join(spine_items),
+        extra_metadata=extra_metadata,
+    )
+    ncx_xml = NCX_TEMPLATE.format(title="Pages Book", nav_points="\n".join(nav_points))
+
+    epub_path = tmp_path / "pages.epub"
+    with zipfile.ZipFile(epub_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+    # Headings are emitted with the standard structure...
+    assert "# Front Matter — Cover" in text
+    assert "# Chapter 1 — Chapter 1: First" in text
+    assert "# Chapter 2 — Chapter 2: Second" in text
+    # ...and the body prose nested in inline spans is preserved.
+    assert "BODY-OF-FIRST" in text
+    assert "BODY-OF-SECOND" in text
+    assert result.chapter_count == 2
+    assert result.conversion_quality == "high"
+
+
 def test_convert_resolves_percent_encoded_ncx_src(tmp_path: Path):
     """Regression: NCX `src` attributes can be percent-encoded (Project
     Gutenberg-derived EPUBs commonly use `%40` for `@` in their generated
