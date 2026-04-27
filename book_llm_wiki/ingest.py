@@ -15,7 +15,7 @@ from book_llm_wiki.vault import (
     write_raw_book,
 )
 
-SUPPORTED_EXTS = {".epub", ".pdf", ".md", ".markdown"}
+SUPPORTED_EXTS = {".epub", ".azw3", ".mobi", ".pdf", ".md", ".markdown"}
 
 
 def ingest_file(src: Path, vault_path: Path) -> dict:

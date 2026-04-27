@@ -11,10 +11,14 @@ def test_detect_format_by_extension(tmp_path: Path):
     (tmp_path / "book.pdf").touch()
     (tmp_path / "book.md").touch()
     (tmp_path / "book.markdown").touch()
+    (tmp_path / "book.azw3").touch()
+    (tmp_path / "book.mobi").touch()
     assert detect_format(tmp_path / "book.epub") == "epub"
     assert detect_format(tmp_path / "book.pdf") == "pdf"
     assert detect_format(tmp_path / "book.md") == "markdown"
     assert detect_format(tmp_path / "book.markdown") == "markdown"
+    assert detect_format(tmp_path / "book.azw3") == "kindle"
+    assert detect_format(tmp_path / "book.mobi") == "kindle"
 
 
 def test_detect_format_rejects_unknown(tmp_path: Path):
