@@ -154,6 +154,7 @@ from enum import Enum
 
 class SectionClass(str, Enum):
     FRONT = "front"
+    PREAMBLE = "preamble"  # Introduction/Preface/Foreword/Prologue: summarize, but don't number as Chapter N
     CHAPTER = "chapter"
     BACK = "back"
 
@@ -162,18 +163,36 @@ class SectionClass(str, Enum):
 # Each pattern is a lowercase substring or regex that decides the class.
 _FRONT_PATTERNS = [
     re.compile(r"^cover$"),
+    re.compile(r"^cover page$"),
     re.compile(r"^title page$"),
     re.compile(r"^half title$"),
     re.compile(r"^dedication$"),
     re.compile(r"^epigraph$"),
-    re.compile(r"^welcome$"),
     re.compile(r"^praise for\b"),
+    re.compile(r"^praise$"),
     re.compile(r"^also by\b"),  # "also by X" at the start is front matter when it precedes chapters;
     # but our heuristic treats 'also by' as back matter (see below). Handle via BACK list.
     re.compile(r"^acknowledg[e]?ments?$"),  # can appear front OR back; when front, rare. default front.
-    re.compile(r"^foreword$"),
-    re.compile(r"^preface$"),
-    re.compile(r"^prologue$"),
+]
+
+
+# PREAMBLE: chapters of the book that come before "Chapter 1" but are still
+# substantive content worth summarizing. They get a `# Preamble — <name>`
+# heading so the chapter detector keeps them in scope but doesn't number
+# them as Chapter N (preventing the off-by-N shift that pushed every actual
+# chapter number forward in books like Atomic Habits, Hooked, Zero to One,
+# Deep Work, Gap Selling, Building a Second Brain, and Design of Everyday
+# Things).
+_PREAMBLE_PATTERNS = [
+    re.compile(r"^foreword\b", re.IGNORECASE),
+    re.compile(r"^preface\b", re.IGNORECASE),       # matches "Preface", "Preface to the X Edition", "Preface: ..."
+    re.compile(r"^prologue\b", re.IGNORECASE),
+    re.compile(r"^introduction\b", re.IGNORECASE),  # matches "Introduction", "Introduction: My Story"
+    re.compile(r"^welcome\b", re.IGNORECASE),
+    re.compile(r"^(an? )?important note\b", re.IGNORECASE),  # "An Important Note from Nir"
+    re.compile(r"^author'?s note\b", re.IGNORECASE),
+    re.compile(r"^note from\b", re.IGNORECASE),
+    re.compile(r"^about the authors?$", re.IGNORECASE),  # when it appears at front, before any chapter
 ]
 
 _BACK_PATTERNS = [
@@ -200,7 +219,6 @@ _BACK_PATTERNS = [
 _CHAPTER_PATTERNS = [
     re.compile(r"^(chapter|chap\.?)\s+\d+\b", re.IGNORECASE),
     re.compile(r"^\d+\s+\S", re.IGNORECASE),  # "1 The Surprising..."
-    re.compile(r"^introduction(:|$|\s)", re.IGNORECASE),
     re.compile(r"^conclusion(:|$|\s)", re.IGNORECASE),
     re.compile(r"^epilogue(:|$|\s)", re.IGNORECASE),
     re.compile(r"^part\s+[ivx\d]+", re.IGNORECASE),  # PART 1, Part II
@@ -228,6 +246,15 @@ def classify_section(name: str) -> SectionClass:
     for pat in _BACK_PATTERNS:
         if pat.match(n_lower):
             return SectionClass.BACK
+
+    # Preamble: substantive non-chapter content that comes before Chapter 1
+    # (Introduction, Preface, Foreword, Prologue, Welcome, author's notes).
+    # Distinct from FRONT (cover/title/dedication/etc) because we want to
+    # summarize this content, but distinct from CHAPTER because it shouldn't
+    # consume a chapter number.
+    for pat in _PREAMBLE_PATTERNS:
+        if pat.match(n):
+            return SectionClass.PREAMBLE
 
     for pat in _CHAPTER_PATTERNS:
         if pat.search(n):
@@ -501,6 +528,8 @@ def convert_pages_epub_to_markdown(epub_path: Path, out_path: Path) -> Conversio
                 if cls == SectionClass.CHAPTER:
                     chapter_num += 1
                     heading = f"# Chapter {chapter_num} — {name}"
+                elif cls == SectionClass.PREAMBLE:
+                    heading = f"# Preamble — {name}"
                 elif cls == SectionClass.FRONT:
                     heading = f"# Front Matter — {name}"
                 else:
@@ -645,6 +674,8 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
             if cls == SectionClass.CHAPTER:
                 chapter_num += 1
                 heading = f"# Chapter {chapter_num} — {name}"
+            elif cls == SectionClass.PREAMBLE:
+                heading = f"# Preamble — {name}"
             elif cls == SectionClass.FRONT:
                 heading = f"# Front Matter — {name}"
             else:

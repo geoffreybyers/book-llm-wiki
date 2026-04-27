@@ -67,6 +67,7 @@ Wait for the user to respond. If they press enter, use `{auto_lens}`. If they ty
 
 3. Classify each section by heading prefix:
    - `# Chapter N — ...` → chapter (keep, ordered by N)
+   - `# Preamble — <Title>` → keep and summarize, but render the section heading as `### <Title>` (no chapter number). These are introductions, prefaces, forewords, prologues, "An Important Note", etc. — content that comes before Chapter 1 but doesn't consume a chapter number.
    - `# Front Matter — ...` → filtered
    - `# Back Matter — ...` → filtered
    - No prefix (or any other heading) → treat as chapter in a flat-mode raw file

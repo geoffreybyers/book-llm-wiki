@@ -29,11 +29,12 @@ from book_llm_wiki.convert.epub import classify_section, SectionClass
 
 def test_classify_obvious_front_matter():
     assert classify_section("Cover") == SectionClass.FRONT
+    assert classify_section("Cover Page") == SectionClass.FRONT
     assert classify_section("Title Page") == SectionClass.FRONT
     assert classify_section("Copyright") == SectionClass.BACK  # copyright is back per spec listing
     assert classify_section("Dedication") == SectionClass.FRONT
     assert classify_section("Epigraph") == SectionClass.FRONT
-    assert classify_section("Welcome") == SectionClass.FRONT
+    assert classify_section("Praise") == SectionClass.FRONT
 
 
 def test_classify_obvious_back_matter():
@@ -49,12 +50,26 @@ def test_classify_obvious_back_matter():
 def test_classify_chapters_and_parts():
     assert classify_section("Chapter 1: Origins") == SectionClass.CHAPTER
     assert classify_section("1 The Surprising Power of Atomic Habits") == SectionClass.CHAPTER
-    assert classify_section("Introduction") == SectionClass.CHAPTER
-    assert classify_section("Introduction: My Story") == SectionClass.CHAPTER
     assert classify_section("Conclusion") == SectionClass.CHAPTER
     assert classify_section("PART 1: The Idea") == SectionClass.CHAPTER
     assert classify_section("Rule #1: Work Deeply") == SectionClass.CHAPTER
     assert classify_section("The Fundamentals") == SectionClass.CHAPTER  # unknown → default chapter
+
+
+def test_classify_preamble_keeps_introductions_unnumbered():
+    """Sections that are content-bearing but pre-Chapter-1 belong to PREAMBLE,
+    so they can be summarized without consuming chapter numbers."""
+    assert classify_section("Introduction") == SectionClass.PREAMBLE
+    assert classify_section("Introduction: My Story") == SectionClass.PREAMBLE
+    assert classify_section("Preface") == SectionClass.PREAMBLE
+    assert classify_section("Preface to the Revised Edition") == SectionClass.PREAMBLE
+    assert classify_section("Preface: Zero to One") == SectionClass.PREAMBLE
+    assert classify_section("Foreword") == SectionClass.PREAMBLE
+    assert classify_section("Foreword by Daniel Kahneman") == SectionClass.PREAMBLE
+    assert classify_section("Prologue") == SectionClass.PREAMBLE
+    assert classify_section("Welcome") == SectionClass.PREAMBLE
+    assert classify_section("An Important Note From Nir") == SectionClass.PREAMBLE
+    assert classify_section("Author's Note") == SectionClass.PREAMBLE
 
 
 from book_llm_wiki.convert.epub import convert_epub_to_markdown
@@ -587,10 +602,12 @@ def test_convert_aligns_bodies_when_spine_reorders_manifest(tmp_path: Path):
     convert_epub_to_markdown(epub_path, out)
     text = out.read_text()
 
-    fw = text.index("# Chapter 1 — Foreword by James Clear")
-    ch1 = text.index("# Chapter 2 — Chapter 1: First")
-    ch2 = text.index("# Chapter 3 — Chapter 2: Second")
-    ch3 = text.index("# Chapter 4 — Chapter 3: Third")
+    # Foreword is now a Preamble (summarized but not consuming a chapter
+    # number), so book chapters number from 1 directly.
+    fw = text.index("# Preamble — Foreword by James Clear")
+    ch1 = text.index("# Chapter 1 — Chapter 1: First")
+    ch2 = text.index("# Chapter 2 — Chapter 2: Second")
+    ch3 = text.index("# Chapter 3 — Chapter 3: Third")
     assert "FOREWORD-MARKER" in text[fw:ch1]
     assert "BODY-OF-FIRST" in text[ch1:ch2]
     assert "BODY-OF-SECOND" in text[ch2:ch3]
