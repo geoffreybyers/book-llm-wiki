@@ -88,6 +88,51 @@ def _cmd_reset(args, cfg) -> int:
     return 0
 
 
+def _cmd_reingest(args, cfg) -> int:
+    """Wipe ingest state for a book so the next `ingest` reprocesses it.
+
+    Removes matching collected.md rows, queue entries, and the raw output
+    directory. Use after replacing an EPUB with a different edition.
+    """
+    from book_llm_wiki.vault import (
+        delete_raw_book,
+        remove_collected_rows,
+        remove_from_queue,
+        _read_collected_rows,
+    )
+    key = args.book
+    target_title = key.split(" - ")[0].strip()
+    target_author = key.split(" - ", 1)[1].strip() if " - " in key else None
+
+    matches = [
+        (r["title"], r["author"]) for r in _read_collected_rows(cfg.vault_path)
+        if r["title"] == target_title and (target_author is None or r["author"] == target_author)
+    ]
+    if not matches:
+        print(f"reingest: no book matching '{key}' in collected.md", file=sys.stderr)
+        return 1
+
+    rows_removed = remove_collected_rows(cfg.vault_path, target_title, target_author)
+    queue_removed = remove_from_queue(cfg.vault_path, target_title, target_author)
+
+    raw_deleted = 0
+    seen = set()
+    for title, author in matches:
+        if (title, author) in seen:
+            continue
+        seen.add((title, author))
+        if delete_raw_book(cfg.vault_path, title, author):
+            raw_deleted += 1
+
+    for title, author in seen:
+        print(f"wiped: {title} — {author}")
+    print(f"  collected rows removed: {rows_removed}")
+    print(f"  queue entries removed: {queue_removed}")
+    print(f"  raw output dirs deleted: {raw_deleted}")
+    print("Run `ingest` (or /ingest-book) to re-process.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="book-llm-wiki",
@@ -108,6 +153,12 @@ def main(argv: list[str] | None = None) -> int:
     reset = sub.add_parser("reset", help="Re-queue a previously-analyzed book")
     reset.add_argument("book", help="Book identifier: '<Title> - <Author>' or '<Title>'")
 
+    reingest = sub.add_parser(
+        "reingest",
+        help="Wipe ingest state for a book so the next ingest reprocesses it (use after replacing an EPUB)",
+    )
+    reingest.add_argument("book", help="Book identifier: '<Title> - <Author>' or '<Title>'")
+
     args = parser.parse_args(argv)
 
     cfg_path = Path(args.config) if args.config else DEFAULT_CONFIG
@@ -123,4 +174,6 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_status(args, cfg)
     if args.command == "reset":
         return _cmd_reset(args, cfg)
+    if args.command == "reingest":
+        return _cmd_reingest(args, cfg)
     return 2

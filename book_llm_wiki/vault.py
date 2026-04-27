@@ -259,6 +259,62 @@ def is_ingested(vault_path: Path, title: str, author: str) -> bool:
     return False
 
 
+def _write_collected_rows(vault_path: Path, rows: list[dict]) -> None:
+    collected = Path(vault_path) / "collected.md"
+    lines = [COLLECTED_HEADER.rstrip() + "\n"]
+    for r in rows:
+        cells = [r["title"], r["author"], r["status"], r["chapters"],
+                 r["conversion_quality"], r["mode"], r["lens"],
+                 r["analyzed_at"], r["source"]]
+        cells = [c.replace("|", "\\|") for c in cells]
+        lines.append("| " + " | ".join(cells) + " |\n")
+    collected.write_text("".join(lines))
+
+
+def remove_collected_rows(vault_path: Path, title: str, author: str | None) -> int:
+    """Remove all collected.md rows matching title (and author, if given). Returns count removed."""
+    rows = _read_collected_rows(vault_path)
+    keep, removed = [], 0
+    for r in rows:
+        if r["title"] == title and (author is None or r["author"] == author):
+            removed += 1
+            continue
+        keep.append(r)
+    if removed:
+        _write_collected_rows(vault_path, keep)
+    return removed
+
+
+def remove_from_queue(vault_path: Path, title: str, author: str | None) -> int:
+    """Remove all analysis_queue.md entries matching title (and author, if given)."""
+    q_file = Path(vault_path) / "analysis_queue.md"
+    if not q_file.exists():
+        return 0
+    lines = q_file.read_text().splitlines(keepends=True)
+    out, removed = [], 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("- ") and " - " in stripped[2:]:
+            entry = stripped[2:].strip()
+            t, a = entry.split(" - ", 1)
+            if t.strip() == title and (author is None or a.strip() == author):
+                removed += 1
+                continue
+        out.append(line)
+    if removed:
+        q_file.write_text("".join(out))
+    return removed
+
+
+def delete_raw_book(vault_path: Path, title: str, author: str) -> bool:
+    """Delete the raw/books/<Title> - <Author>/ directory. Returns True if deleted."""
+    raw_dir = raw_book_path(vault_path, title, author).parent
+    if raw_dir.exists():
+        shutil.rmtree(raw_dir)
+        return True
+    return False
+
+
 def read_queue(vault_path: Path) -> list[dict]:
     q_file = Path(vault_path) / "analysis_queue.md"
     if not q_file.exists():

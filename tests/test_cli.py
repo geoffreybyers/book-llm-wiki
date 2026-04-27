@@ -13,3 +13,4 @@ def test_cli_help_lists_subcommands():
     assert "ingest" in result.stdout
     assert "status" in result.stdout
     assert "reset" in result.stdout
+    assert "reingest" in result.stdout
