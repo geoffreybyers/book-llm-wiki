@@ -155,6 +155,7 @@ from enum import Enum
 class SectionClass(str, Enum):
     FRONT = "front"
     PREAMBLE = "preamble"  # Introduction/Preface/Foreword/Prologue: summarize, but don't number as Chapter N
+    PART = "part"          # "Part 1", "Part One": never consume a chapter number; body kept iff substantive
     CHAPTER = "chapter"
     BACK = "back"
 
@@ -216,15 +217,30 @@ _BACK_PATTERNS = [
 ]
 
 
+# PART: structural divider grouping a run of chapters. Never numbered as a
+# chapter; body emitted only when substantive (Awaken the Giant Within and
+# Blue Ocean Strategy use Parts as 8-12 word title pages; Clear Thinking
+# packs each Part with a 200-800 word epigraph + setup before its chapters).
+_PART_PATTERNS = [
+    re.compile(r"^part\s+(\w+)\b", re.IGNORECASE),  # "Part 1", "Part 1:", "Part 1.", "Part One", "Part II"
+]
+
+
 _CHAPTER_PATTERNS = [
     re.compile(r"^(chapter|chap\.?)\s+\d+\b", re.IGNORECASE),
     re.compile(r"^\d+\s+\S", re.IGNORECASE),  # "1 The Surprising..."
     re.compile(r"^conclusion(:|$|\s)", re.IGNORECASE),
     re.compile(r"^epilogue(:|$|\s)", re.IGNORECASE),
-    re.compile(r"^part\s+[ivx\d]+", re.IGNORECASE),  # PART 1, Part II
     re.compile(r"^rule\s+#?\d+", re.IGNORECASE),     # Rule #1, Rule 2
     re.compile(r"^the\s+\w+\s+law\b", re.IGNORECASE),
 ]
+
+
+# How many words of body content separate a substantive Part intro (kept and
+# summarized) from a divider-only Part page (dropped from the output). 8-12
+# words covers "PART ONE / Unleash Your Power" style title pages; real intros
+# in the wild start at ~150 words. 50 leaves comfortable margin on both sides.
+_PART_BODY_MIN_WORDS = 50
 
 
 def classify_section(name: str) -> SectionClass:
@@ -255,6 +271,13 @@ def classify_section(name: str) -> SectionClass:
     for pat in _PREAMBLE_PATTERNS:
         if pat.match(n):
             return SectionClass.PREAMBLE
+
+    # Part: structural divider ("Part 1", "Part One"). Never consumes a
+    # chapter number; the convert loop decides whether to emit the body
+    # based on word count.
+    for pat in _PART_PATTERNS:
+        if pat.match(n):
+            return SectionClass.PART
 
     for pat in _CHAPTER_PATTERNS:
         if pat.search(n):
@@ -426,39 +449,40 @@ def _epub2md_skip_offset(section_md_dir: Path, manifest_hrefs: list[str]) -> int
     """How many leading manifest XHTML items did epub2md silently skip?
 
     epub2md numbers its output files by its own internal counter, which
-    matches the manifest XHTML position 1-for-1 — except when an EPUB places
-    its cover/titlepage XHTML at the OPF root (no subdirectory) while the
-    rest of the spine lives under e.g. ``OEBPS/xhtml/``. In that case
-    epub2md silently treats the root-level file as the cover and emits no
-    ``.md`` for it, shifting every subsequent file's number down by one.
+    matches the manifest XHTML position 1-for-1 — except when manifest[0]
+    is a cover/titlepage XHTML, in which case epub2md silently treats it
+    as the cover and emits no ``.md`` for it, shifting every subsequent
+    file's number down by one.
 
     Without compensation, every NCX-derived ``# Chapter N`` wrapper ends up
-    filled with the body of conceptual chapter N+1. Confirmed on Clear
-    Thinking (Shane Parrish, Penguin/Portfolio 2023) and Thinking, Fast and
-    Slow (Daniel Kahneman); affects ~half of the trade-publisher EPUBs in
-    the vault.
+    filled with the body of conceptual chapter N+1. Observed in the wild on:
+      - Clear Thinking (Shane Parrish, Penguin/Portfolio 2023, PDF version):
+        manifest[0] at OPF root, basename "titlepage".
+      - Thinking, Fast and Slow (Daniel Kahneman): same pattern.
+      - Blue Ocean Strategy (Harvard Business Review 2015): manifest[0] at
+        ``Text/titlepage.html`` (subdir), basename still "titlepage".
 
-    Returns the number of leading manifest entries to skip (0 if no shift
-    is needed).
+    Detection: manifest count > emitted count AND manifest[0]'s basename
+    matches the cover/titlepage family. We do NOT require the file to be
+    at OPF root — Blue Ocean's titlepage is in a subdirectory and is still
+    dropped. We do NOT cap the total diff — Blue Ocean drops BOTH a
+    leading titlepage AND a trailing cover image (total diff 2) but only
+    the leading drop shifts NCX-referenced body lookups; the trailing
+    cover sits past the spine and is invisible.
+
+    Returns 1 when the leading-skip is detected, 0 otherwise.
     """
     md_count = sum(1 for _ in section_md_dir.glob("*.md"))
     if md_count >= len(manifest_hrefs):
         return 0
-    diff = len(manifest_hrefs) - md_count
-    # Only compensate for the well-characterized single-skip cover/titlepage
-    # case. Larger gaps (multiple skips, malformed EPUBs) are left alone so
-    # the caller can see empty bodies and investigate, rather than the fix
-    # silently re-aligning to the wrong position.
-    if diff != 1:
+    if not manifest_hrefs:
         return 0
-    first_href = manifest_hrefs[0]
-    first_at_opf_root = "/" not in first_href
-    first_basename = Path(first_href).stem.lower()
+    first_basename = Path(manifest_hrefs[0]).stem.lower()
     looks_like_cover = any(
         token in first_basename
         for token in ("titlepage", "title_page", "cover", "halftitle", "half_title")
     )
-    if first_at_opf_root and looks_like_cover:
+    if looks_like_cover:
         return 1
     return 0
 
@@ -525,7 +549,17 @@ def convert_pages_epub_to_markdown(epub_path: Path, out_path: Path) -> Conversio
             for section in deduped_structure:
                 name = section["name"]
                 cls = classify_section(name)
-                if cls == SectionClass.CHAPTER:
+                href = manifest_hrefs[section["_position"] - 1]
+                try:
+                    xhtml = zf.read(f"{opf_dir}{href}").decode("utf-8", errors="replace")
+                except KeyError:
+                    xhtml = ""
+                body = _extract_xhtml_text(xhtml)
+                if cls == SectionClass.PART:
+                    if len(body.split()) < _PART_BODY_MIN_WORDS:
+                        continue  # divider-only Part page; drop entirely
+                    heading = f"# Part — {name}"
+                elif cls == SectionClass.CHAPTER:
                     chapter_num += 1
                     heading = f"# Chapter {chapter_num} — {name}"
                 elif cls == SectionClass.PREAMBLE:
@@ -534,12 +568,6 @@ def convert_pages_epub_to_markdown(epub_path: Path, out_path: Path) -> Conversio
                     heading = f"# Front Matter — {name}"
                 else:
                     heading = f"# Back Matter — {name}"
-                href = manifest_hrefs[section["_position"] - 1]
-                try:
-                    xhtml = zf.read(f"{opf_dir}{href}").decode("utf-8", errors="replace")
-                except KeyError:
-                    xhtml = ""
-                body = _extract_xhtml_text(xhtml)
                 parts.append(f"{heading}\n\n{body}\n")
 
         out_path.write_text("\n".join(parts))
@@ -671,7 +699,14 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         for section in deduped_structure:
             name = section["name"]
             cls = classify_section(name)
-            if cls == SectionClass.CHAPTER:
+            body = _section_body_for_position(
+                section_dir, section["_position"], skip_offset=skip_offset
+            )
+            if cls == SectionClass.PART:
+                if len(body.split()) < _PART_BODY_MIN_WORDS:
+                    continue  # divider-only Part page; drop entirely
+                heading = f"# Part — {name}"
+            elif cls == SectionClass.CHAPTER:
                 chapter_num += 1
                 heading = f"# Chapter {chapter_num} — {name}"
             elif cls == SectionClass.PREAMBLE:
@@ -680,9 +715,6 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
                 heading = f"# Front Matter — {name}"
             else:
                 heading = f"# Back Matter — {name}"
-            body = _section_body_for_position(
-                section_dir, section["_position"], skip_offset=skip_offset
-            )
             parts.append(f"{heading}\n\n{body.strip()}\n")
 
         out_path.write_text("\n".join(parts))

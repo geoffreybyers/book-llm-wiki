@@ -47,13 +47,26 @@ def test_classify_obvious_back_matter():
     assert classify_section("Table of Contents") == SectionClass.BACK
 
 
-def test_classify_chapters_and_parts():
+def test_classify_chapters():
     assert classify_section("Chapter 1: Origins") == SectionClass.CHAPTER
     assert classify_section("1 The Surprising Power of Atomic Habits") == SectionClass.CHAPTER
     assert classify_section("Conclusion") == SectionClass.CHAPTER
-    assert classify_section("PART 1: The Idea") == SectionClass.CHAPTER
     assert classify_section("Rule #1: Work Deeply") == SectionClass.CHAPTER
     assert classify_section("The Fundamentals") == SectionClass.CHAPTER  # unknown → default chapter
+
+
+def test_classify_parts_are_their_own_class():
+    """Part separators ('Part 1', 'Part One', 'Part II') must NOT consume a
+    chapter number. They classify as PART; the convert loop later decides
+    whether to emit body based on word count.
+    """
+    assert classify_section("PART 1: The Idea") == SectionClass.PART
+    assert classify_section("Part 1: The Enemies of Clear Thinking") == SectionClass.PART
+    assert classify_section("Part 1. The Enemies of Clear Thinking") == SectionClass.PART
+    assert classify_section("Part One: Unleash Your Power") == SectionClass.PART
+    assert classify_section("Part Two: Taking Control") == SectionClass.PART
+    assert classify_section("Part II: Formulating Strategy") == SectionClass.PART
+    assert classify_section("part 5") == SectionClass.PART
 
 
 def test_classify_preamble_keeps_introductions_unnumbered():
@@ -318,8 +331,10 @@ def test_epub2md_skip_offset_compensates_for_root_level_cover(tmp_path: Path):
 
     assert _epub2md_skip_offset(section_dir, manifest_root_titlepage) == 1
 
-    # Same filenames but first XHTML is NOT at the OPF root → no shift
-    # (epub2md doesn't drop subdir-located files even when named cover).
+    # Updated 2026-04-27: subdir-located cover IS also dropped by epub2md.
+    # Blue Ocean Strategy (HBR 2015) has manifest[0] = "Text/titlepage.html"
+    # (subdir, not at OPF root) and epub2md still drops it. Detection now
+    # keys off the basename only, not the directory location.
     manifest_subdir_titlepage = [
         "OEBPS/xhtml/01_titlepage.xhtml",
         "OEBPS/xhtml/02_Title_Page.xhtml",
@@ -327,12 +342,26 @@ def test_epub2md_skip_offset_compensates_for_root_level_cover(tmp_path: Path):
         "OEBPS/xhtml/04_Introduction.xhtml",
         "OEBPS/xhtml/05_Chapter_1.xhtml",
     ]
-    # md_count==4, manifest count==5, but first is not at root → no shift.
-    assert _epub2md_skip_offset(section_dir, manifest_subdir_titlepage) == 0
+    assert _epub2md_skip_offset(section_dir, manifest_subdir_titlepage) == 1
 
     # Match between produced count and manifest count → no shift needed.
     (section_dir / "05-Chapter_1.md").write_text("body of Chapter_1")
     assert _epub2md_skip_offset(section_dir, manifest_root_titlepage) == 0
+
+    # Manifest[0] basename doesn't look like cover → no shift even when
+    # md_count < manifest_count (could be a malformed EPUB or a different
+    # epub2md skip pattern; safer to leave alignment to investigation).
+    section_dir2 = tmp_path / "sections2"
+    section_dir2.mkdir()
+    for i, name in enumerate(["preface", "intro", "ch1"], start=1):
+        (section_dir2 / f"{i:02d}-{name}.md").write_text("body")
+    manifest_no_cover_first = [
+        "OEBPS/preface.xhtml",
+        "OEBPS/intro.xhtml",
+        "OEBPS/ch1.xhtml",
+        "OEBPS/ch2.xhtml",
+    ]
+    assert _epub2md_skip_offset(section_dir2, manifest_no_cover_first) == 0
 
 
 def test_section_body_for_position_honors_skip_offset(tmp_path: Path):
@@ -569,6 +598,183 @@ def test_is_pdf_origin_passes_rich_retail_nav(tmp_path: Path):
             zf.writestr(f"OEBPS/{href}", html)
 
     assert not is_pdf_origin(epub_path), "rich-nav retail EPUB must not be flagged"
+
+
+def test_convert_drops_divider_only_part_pages(tmp_path: Path):
+    """Awaken the Giant Within and Blue Ocean Strategy use Part pages as
+    8-12 word title dividers ('PART ONE / Unleash Your Power'). They must
+    not consume a chapter number AND must not show up in the output.
+    """
+    sections = [
+        ("Cover", "Cover image."),
+        ("Part One: Unleash Your Power", "PART ONE Unleash Your Power"),  # 5 words
+        ("Chapter 1: Dreams of Destiny", "BODY-OF-CH1 " * 30),
+        ("Chapter 2: Decisions", "BODY-OF-CH2 " * 30),
+        ("Part Two: Taking Control", "PART TWO Taking Control"),  # 4 words
+        ("Chapter 3: Master System", "BODY-OF-CH3 " * 30),
+    ]
+    epub_path = _build_epub_with_layout(
+        tmp_path / "divider_parts.epub",
+        title="Divider Parts Book",
+        sections=sections,
+        spine_indices=[0, 1, 2, 3, 4, 5],
+        ncx_indices=[0, 1, 2, 3, 4, 5],
+    )
+
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+
+    # Part pages disappear entirely
+    assert "# Part — Part One" not in text
+    assert "# Part — Part Two" not in text
+    assert "Chapter 1 — Part" not in text  # never re-classified as chapter
+
+    # Real chapters number from 1 globally, no shift from Part divider
+    assert "# Chapter 1 — Chapter 1: Dreams of Destiny" in text
+    assert "# Chapter 2 — Chapter 2: Decisions" in text
+    assert "# Chapter 3 — Chapter 3: Master System" in text
+    assert result.chapter_count == 3
+
+
+def test_convert_keeps_substantive_part_intros(tmp_path: Path):
+    """Clear Thinking (Penguin RH 2023) packs each Part page with a 200-800
+    word epigraph + framing prose before its sub-chapters. Those must be
+    preserved as `# Part — <name>` so /summarize-book can include them.
+    """
+    sections = [
+        ("Cover", "Cover image."),
+        ("Part 1: The Enemies of Clear Thinking",
+         "INTRO-MARKER " + ("substantive part intro prose " * 30)),  # ~91 words
+        ("1.1: Thinking Badly", "BODY-OF-1-1 " * 30),
+        ("1.2: The Emotion Default", "BODY-OF-1-2 " * 30),
+        ("Part 2: Building Strength",
+         "PART2-INTRO " + ("more substantive intro " * 30)),  # ~91 words
+        ("2.1: Self-Accountability", "BODY-OF-2-1 " * 30),
+    ]
+    epub_path = _build_epub_with_layout(
+        tmp_path / "substantive_parts.epub",
+        title="Substantive Parts Book",
+        sections=sections,
+        spine_indices=[0, 1, 2, 3, 4, 5],
+        ncx_indices=[0, 1, 2, 3, 4, 5],
+    )
+
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+
+    # Part headings kept as their own section type
+    assert "# Part — Part 1: The Enemies of Clear Thinking" in text
+    assert "# Part — Part 2: Building Strength" in text
+
+    # Substantive intro body preserved
+    p1 = text.index("# Part — Part 1: The Enemies of Clear Thinking")
+    ch1 = text.index("BODY-OF-1-1")
+    assert "INTRO-MARKER" in text[p1:ch1]
+
+    # Sub-chapters get sequential global numbers, no shift from Parts
+    assert "# Chapter 1 — 1.1: Thinking Badly" in text
+    assert "# Chapter 2 — 1.2: The Emotion Default" in text
+    assert "# Chapter 3 — 2.1: Self-Accountability" in text
+    assert result.chapter_count == 3
+
+
+def test_convert_pages_drops_divider_only_parts_and_keeps_substantive(tmp_path: Path):
+    """The Pages-EPUB code path (used for Apple Pages-generated EPUBs like
+    the Penguin RH 2023 Clear Thinking) must apply the same Part rules as
+    the standard epub2md path.
+    """
+    import zipfile
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, MIMETYPE,
+    )
+
+    pages_html_template = """<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>{title}</title></head>
+<body><div class="body" style="white-space:pre-wrap;">
+<h1 class="p42"><span class="c1">{title}</span></h1>
+<p class="p1"><span class="c1">{body}</span></p>
+</div></body></html>"""
+
+    sections = [
+        ("Cover", "Cover content"),
+        ("Part 1. Enemies", "DIVIDER ONLY"),                              # 2 words
+        ("1.1: Thinking Badly", "BODY-OF-1-1 " * 30),
+        ("Part 2. Building Strength",
+         "INTRO2-MARKER " + ("substantive intro words " * 30)),           # ~91 words
+        ("2.1: Self-Accountability", "BODY-OF-2-1 " * 30),
+    ]
+
+    manifest_items, spine_items, nav_points, html_files = [], [], [], {}
+    for i, (label, body) in enumerate(sections, start=1):
+        item_id = f"s{i}"
+        href = f"section-{i}.xhtml"
+        manifest_items.append(f'    <item id="{item_id}" href="{href}" media-type="application/xhtml+xml"/>')
+        spine_items.append(f'    <itemref idref="{item_id}"/>')
+        nav_points.append(NAV_POINT_TEMPLATE.format(id=item_id, order=i, label=label, src=href))
+        html_files[href] = pages_html_template.format(title=label, body=body)
+
+    extra_metadata = '    <meta name="generator" content="Pages Publishing macOS v1.0"/>'
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="Pages Parts Book", author="A", year="2024", title_slug="pages-parts-book",
+        manifest_items="\n".join(manifest_items),
+        spine_items="\n".join(spine_items),
+        extra_metadata=extra_metadata,
+    )
+    ncx_xml = NCX_TEMPLATE.format(title="Pages Parts Book", nav_points="\n".join(nav_points))
+
+    epub_path = tmp_path / "pages_parts.epub"
+    with zipfile.ZipFile(epub_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+
+    # Part 1 was a 2-word divider → dropped
+    assert "# Part — Part 1. Enemies" not in text
+    # Part 2 had a substantive intro → kept
+    assert "# Part — Part 2. Building Strength" in text
+    assert "INTRO2-MARKER" in text
+    # Sub-chapters number sequentially without absorbing Part slots
+    assert "# Chapter 1 — 1.1: Thinking Badly" in text
+    assert "# Chapter 2 — 2.1: Self-Accountability" in text
+    assert result.chapter_count == 2
+
+
+def test_epub2md_skip_offset_compensates_when_trailing_skip_also_present(tmp_path: Path):
+    """Regression: Blue Ocean Strategy (HBR 2015) drops BOTH a leading
+    titlepage at OPF root AND a trailing cover image — total diff between
+    manifest XHTML count and emitted .md count is 2, not 1. The earlier
+    `diff != 1 → 0` short-circuit silently misaligned every body. Detection
+    of the leading skip must be independent of the total diff.
+    """
+    from book_llm_wiki.convert.epub import _epub2md_skip_offset
+
+    section_dir = tmp_path / "sections"
+    section_dir.mkdir()
+
+    # Manifest has 5 XHTML; epub2md produced 3 (dropped manifest[0]
+    # titlepage AND manifest[4] cover.html → diff of 2). Only the leading
+    # skip shifts numbering of the 3 emitted bodies, so skip_offset == 1.
+    manifest = [
+        "Text/titlepage.xhtml",     # at OPF root → leading skip
+        "Text/copyright.xhtml",
+        "Text/preface.xhtml",
+        "Text/chapter1.xhtml",
+        "Text/cover.xhtml",         # trailing skip; not at index 0
+    ]
+    for i, name in enumerate(["copyright", "preface", "chapter1"], start=1):
+        (section_dir / f"{i:02d}-{name}.md").write_text(f"body of {name}")
+
+    assert _epub2md_skip_offset(section_dir, manifest) == 1
 
 
 def test_convert_aligns_bodies_when_spine_reorders_manifest(tmp_path: Path):

@@ -27,13 +27,15 @@ def test_deep_work_ingest_produces_chapter_structure(tmp_vault: Path):
     assert result["status"] == "queued"
     assert result["title"] == "Deep Work"
     assert result["conversion_quality"] == "high"
-    assert result["chapters"] >= 10  # Deep Work has ~15 chapter-classed sections
+    # Deep Work has 8 chapter-classed sections (Chapters 1-3, Rules 1-4,
+    # Conclusion) once Parts are correctly excluded from the chapter count.
+    assert result["chapters"] >= 8
 
     raw = tmp_vault / "raw" / "books" / "Deep Work - Cal Newport" / "Deep Work - Cal Newport.md"
     assert raw.exists()
     text = raw.read_text()
-    # At least 10 explicit chapter headings
+    # 8 explicit chapter headings (Parts are now their own class, not chapters)
     chapter_headings = [l for l in text.splitlines() if l.startswith("# Chapter ")]
-    assert len(chapter_headings) >= 10
+    assert len(chapter_headings) >= 8
     # Images folder copied next to the markdown
     assert (raw.parent / "images").is_dir(), "images folder should be copied alongside the markdown"
