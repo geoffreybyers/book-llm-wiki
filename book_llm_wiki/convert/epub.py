@@ -174,6 +174,7 @@ _FRONT_PATTERNS = [
     re.compile(r"^also by\b"),  # "also by X" at the start is front matter when it precedes chapters;
     # but our heuristic treats 'also by' as back matter (see below). Handle via BACK list.
     re.compile(r"^acknowledg[e]?ments?$"),  # can appear front OR back; when front, rare. default front.
+    re.compile(r"^(start|begin)\s+reading$"),  # Kindle/Apple Books navigation landmark
 ]
 
 
@@ -191,7 +192,7 @@ _PREAMBLE_PATTERNS = [
     re.compile(r"^introduction\b", re.IGNORECASE),  # matches "Introduction", "Introduction: My Story"
     re.compile(r"^welcome\b", re.IGNORECASE),
     re.compile(r"^(an? )?important note\b", re.IGNORECASE),  # "An Important Note from Nir"
-    re.compile(r"^author'?s note\b", re.IGNORECASE),
+    re.compile(r"^author[’']?s note\b", re.IGNORECASE),  # straight or curly apostrophe
     re.compile(r"^note from\b", re.IGNORECASE),
     re.compile(r"^about the authors?$", re.IGNORECASE),  # when it appears at front, before any chapter
 ]
@@ -205,6 +206,7 @@ _BACK_PATTERNS = [
     re.compile(r"^bibliography$"),
     re.compile(r"^references$"),
     re.compile(r"^copyright$"),
+    re.compile(r"^copyright page$"),
     re.compile(r"^colophon$"),
     re.compile(r"^about the author$"),
     re.compile(r"^about the publisher$"),
@@ -579,6 +581,168 @@ def convert_pages_epub_to_markdown(epub_path: Path, out_path: Path) -> Conversio
     )
 
 
+# Word-number lookup for chapter heading parsing in merge-mode fallback.
+# Covers Western non-fiction's typical Chapter One … Chapter Twenty range.
+_WORD_TO_NUM = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19, "twenty": 20,
+}
+
+
+_SECTION_MODE_EMPTY_CHAPTER_WORD_FLOOR = 25
+
+
+def _section_mode_chapters_look_empty(parts: list[str]) -> bool:
+    """Detect the Calibre-pre-split-spine pattern that breaks section-mode body lookup.
+
+    Symptom: most ``# Chapter N — ...`` sections come back with a body short
+    enough that it's clearly just a TOC link-back wrapper (typical wrapper:
+    ``[Chapter One Title](./03-Contents.md#ch4)`` and nothing else, ~5-15
+    words). Real non-fiction chapters are 1,000+ words; a chapter that
+    short means epub2md routed the wrong manifest file under the NCX entry.
+
+    The 25-word floor sits comfortably above realistic wrapper-only sizes
+    (a bracketed-link chapter title is 5-15 words even with publisher
+    decoration) and below any plausible real chapter body.
+
+    Triggers fallback when at least 3 chapters AND ≥50% of chapters fall
+    below the floor. The 3-chapter floor avoids false-positives on
+    legitimately short interlude chapters in books with few chapters total.
+    """
+    chapter_word_counts: list[int] = []
+    for part in parts:
+        first_line = part.split("\n", 1)[0]
+        if not first_line.startswith("# Chapter "):
+            continue
+        body = "\n".join(part.split("\n")[1:]).strip()
+        chapter_word_counts.append(len(body.split()))
+
+    if len(chapter_word_counts) < 3:
+        return False
+    short = sum(1 for w in chapter_word_counts if w < _SECTION_MODE_EMPTY_CHAPTER_WORD_FLOOR)
+    return short >= 3 and short / len(chapter_word_counts) >= 0.5
+
+
+def _convert_via_merge_mode_with_section_labels(
+    epub_path: Path, out_path: Path
+) -> ConversionResult:
+    """Fallback path for EPUBs whose chapter bodies are split across files.
+
+    Some publisher EPUBs (commonly retail HarperCollins/Anna's-Archive
+    builds processed through Calibre) carry per-chapter HTML files in
+    ``partNNNN_split_NNN.html`` form: the NCX entry points at the small
+    wrapper file (a chapter title with a link back to the TOC) and the
+    actual body text lives in subsequent split files. The standard
+    section-mode path reads only the wrapper, leaving every chapter
+    empty.
+
+    Merge mode (``epub2md -m``) sidesteps the NCX-to-file lookup entirely
+    by concatenating all spine content under the H1 boundaries the EPUB
+    itself emits. This function runs merge mode, walks the resulting
+    file's H1 boundaries, transforms each one into the standard label
+    (``# Chapter N — Title`` / ``# Preamble — Title`` / ``# Front Matter`` /
+    ``# Back Matter``) using the same ``classify_section`` heuristic as
+    the section-mode path, and writes the result.
+
+    Word-numbered chapter headings (``Chapter One Title``, ``Chapter Two``)
+    are converted to digits for the standard label format. Sections without
+    explicit numbers (Conclusion, Epilogue) consume the next chapter slot.
+    """
+    import tempfile
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        run_epub2md_convert(epub_path, td_path, merge=True)
+        merged_dir = td_path / epub_path.stem
+        merged_md = merged_dir / "merged.md"
+        if not merged_md.exists():
+            mds = list(merged_dir.glob("*.md"))
+            if not mds:
+                raise RuntimeError(
+                    f"epub2md merge mode produced no markdown in {merged_dir}"
+                )
+            merged_md = mds[0]
+        text = merged_md.read_text()
+        # Carry images over.
+        src_images = merged_dir / "images"
+        if src_images.is_dir():
+            dst_images = out_path.parent / "images"
+            if dst_images.exists():
+                shutil.rmtree(dst_images)
+            shutil.copytree(src_images, dst_images)
+
+    # Split on H1 boundaries (lookahead so the boundary stays with its body).
+    raw_sections = re.split(r"(?m)^(?=# )", text)
+    raw_sections = [s for s in raw_sections if s.strip()]
+
+    parts: list[str] = []
+    chapter_num = 0
+    for raw in raw_sections:
+        head_line, _, body = raw.partition("\n")
+        body = body.strip()
+
+        # Strip the bracketed-link form epub2md emits in merge mode:
+        #   "# [Chapter One What Is This Fire?](#id9#nch4)"
+        # Falls through to a plain "# Title" head if the link form doesn't match.
+        m_link = re.match(r"^# \[([^\]]+)\](?:\([^)]*\))?\s*$", head_line)
+        if m_link:
+            title = m_link.group(1).strip()
+        elif head_line.startswith("# "):
+            title = head_line[2:].strip()
+        else:
+            continue
+        if not title:
+            continue
+
+        # Pull an explicit chapter number out of "Chapter <N>[ <title>]" forms.
+        explicit_num: int | None = None
+        chapter_title = title
+        m_chap = re.match(r"^Chapter\s+(\w+)\s*[:.\-—]?\s*(.*)$", title, re.IGNORECASE)
+        if m_chap:
+            num_token = m_chap.group(1).lower()
+            rest = m_chap.group(2).strip()
+            if num_token.isdigit():
+                explicit_num = int(num_token)
+            elif num_token in _WORD_TO_NUM:
+                explicit_num = _WORD_TO_NUM[num_token]
+            if explicit_num is not None and rest:
+                chapter_title = rest
+
+        cls = classify_section(title)
+        if explicit_num is not None:
+            cls = SectionClass.CHAPTER
+
+        if cls == SectionClass.PART:
+            if len(body.split()) < _PART_BODY_MIN_WORDS:
+                continue
+            heading = f"# Part — {chapter_title}"
+        elif cls == SectionClass.CHAPTER:
+            if explicit_num is not None:
+                chapter_num = explicit_num
+            else:
+                chapter_num += 1
+            heading = f"# Chapter {chapter_num} — {chapter_title}"
+        elif cls == SectionClass.PREAMBLE:
+            heading = f"# Preamble — {chapter_title}"
+        elif cls == SectionClass.FRONT:
+            heading = f"# Front Matter — {chapter_title}"
+        else:
+            heading = f"# Back Matter — {chapter_title}"
+        parts.append(f"{heading}\n\n{body}\n")
+
+    out_path.write_text("\n".join(parts))
+    return ConversionResult(
+        chapter_count=chapter_num,
+        conversion_quality="high",
+        mode="structured",
+    )
+
+
 def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResult:
     """Convert an EPUB to a single chapter-structured markdown file.
 
@@ -716,6 +880,15 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
             else:
                 heading = f"# Back Matter — {name}"
             parts.append(f"{heading}\n\n{body.strip()}\n")
+
+        # Detect the Calibre-pre-split-spine pattern: NCX entries point at
+        # tiny chapter-wrapper files while the actual chapter body lives in
+        # subsequent _split_NNN.html files. Section-mode reads only the
+        # wrapper, leaving every chapter near-empty. Re-run via merge mode
+        # (which concatenates all spine content under the EPUB's own H1s) and
+        # use that output instead.
+        if _section_mode_chapters_look_empty(parts):
+            return _convert_via_merge_mode_with_section_labels(epub_path, out_path)
 
         out_path.write_text("\n".join(parts))
         _copy_images(section_dir)

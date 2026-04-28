@@ -35,6 +35,9 @@ def test_classify_obvious_front_matter():
     assert classify_section("Dedication") == SectionClass.FRONT
     assert classify_section("Epigraph") == SectionClass.FRONT
     assert classify_section("Praise") == SectionClass.FRONT
+    # Kindle / Apple Books navigation landmark — must not become a chapter.
+    assert classify_section("Start Reading") == SectionClass.FRONT
+    assert classify_section("Begin Reading") == SectionClass.FRONT
 
 
 def test_classify_obvious_back_matter():
@@ -45,6 +48,9 @@ def test_classify_obvious_back_matter():
     assert classify_section("Also by Cal Newport") == SectionClass.BACK
     assert classify_section("footnotes") == SectionClass.BACK
     assert classify_section("Table of Contents") == SectionClass.BACK
+    # "Copyright Page" appears in many EPUBs alongside (or instead of) "Copyright";
+    # both must classify the same way to keep chapter numbering aligned.
+    assert classify_section("Copyright Page") == SectionClass.BACK
 
 
 def test_classify_chapters():
@@ -83,6 +89,9 @@ def test_classify_preamble_keeps_introductions_unnumbered():
     assert classify_section("Welcome") == SectionClass.PREAMBLE
     assert classify_section("An Important Note From Nir") == SectionClass.PREAMBLE
     assert classify_section("Author's Note") == SectionClass.PREAMBLE
+    # Curly apostrophe is what most retail EPUBs actually emit for the
+    # author's-note heading; must classify the same as the straight form.
+    assert classify_section("Author’s Note") == SectionClass.PREAMBLE
 
 
 from book_llm_wiki.convert.epub import convert_epub_to_markdown
@@ -818,3 +827,150 @@ def test_convert_aligns_bodies_when_spine_reorders_manifest(tmp_path: Path):
     assert "BODY-OF-FIRST" in text[ch1:ch2]
     assert "BODY-OF-SECOND" in text[ch2:ch3]
     assert "BODY-OF-THIRD" in text[ch3:]
+
+
+from book_llm_wiki.convert.epub import _section_mode_chapters_look_empty
+
+
+def test_section_mode_chapters_look_empty_triggers_on_wrapper_only_chapters():
+    parts = [
+        "# Front Matter — Cover\n\nCover image.\n",
+        "# Chapter 1 — One\n\n[link-back-to-toc]\n",
+        "# Chapter 2 — Two\n\n[link-back-to-toc]\n",
+        "# Chapter 3 — Three\n\n[link-back-to-toc]\n",
+    ]
+    assert _section_mode_chapters_look_empty(parts) is True
+
+
+def test_section_mode_chapters_look_empty_does_not_trigger_on_healthy_chapters():
+    parts = [
+        "# Front Matter — Cover\n\nCover image.\n",
+        "# Chapter 1 — One\n\n" + "real chapter content " * 100,
+        "# Chapter 2 — Two\n\n" + "real chapter content " * 100,
+        "# Chapter 3 — Three\n\n" + "real chapter content " * 100,
+    ]
+    assert _section_mode_chapters_look_empty(parts) is False
+
+
+def test_section_mode_chapters_look_empty_skips_when_too_few_chapters():
+    # Two chapters, both empty — below the 3-chapter floor that protects
+    # against false-positives on legitimately short interlude books.
+    parts = [
+        "# Chapter 1 — One\n\n[link-back]\n",
+        "# Chapter 2 — Two\n\n[link-back]\n",
+    ]
+    assert _section_mode_chapters_look_empty(parts) is False
+
+
+def test_section_mode_chapters_look_empty_tolerates_one_short_chapter():
+    # One legitimately short interlude shouldn't drag a healthy book into
+    # the fallback path.
+    parts = [
+        "# Chapter 1 — One\n\n" + "real " * 200,
+        "# Chapter 2 — Two\n\n[wrapper]\n",
+        "# Chapter 3 — Three\n\n" + "real " * 200,
+        "# Chapter 4 — Four\n\n" + "real " * 200,
+    ]
+    assert _section_mode_chapters_look_empty(parts) is False
+
+
+def _build_calibre_split_spine_epub(out_path: Path) -> Path:
+    """Build an EPUB that mimics the Calibre-pre-split-spine pattern.
+
+    Wrapper xhtml files carry just the chapter title (10-word body, the
+    sort of "see also: contents" link-back text Calibre emits when it
+    splits a chapter across multiple xhtml files). Body xhtml files carry
+    the actual chapter prose but no <h1>. NCX points only at the
+    wrappers — exactly what real HarperCollins/Anna's-Archive retail
+    EPUBs do for the chapters.
+    """
+    import zipfile
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, HTML_TEMPLATE, MIMETYPE,
+    )
+
+    BODY_HTML_TEMPLATE = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>{title}</title></head>
+<body>
+<p>{body}</p>
+</body>
+</html>
+"""
+
+    sections = [
+        ("Cover",                   "Cover image.",                     True,  False),
+        ("Chapter One Origins",     "[Chapter One Origins](#anchor)",   True,  True),
+        ("origins-body",            "ORIGINS-BODY " * 200,              False, False),
+        ("Chapter Two Growth",      "[Chapter Two Growth](#anchor)",    True,  True),
+        ("growth-body",             "GROWTH-BODY " * 200,               False, False),
+        ("Chapter Three Reflection","[Chapter Three Reflection](#anchor)", True, True),
+        ("reflection-body",         "REFLECTION-BODY " * 200,           False, False),
+        ("Notes",                   "Reference notes.",                 True,  False),
+    ]
+
+    manifest_items = []
+    html_files = {}
+    nav_points = []
+    for i, (label, body, has_h1, in_ncx) in enumerate(sections, start=1):
+        item_id = f"s{i}"
+        href = f"section-{i}.xhtml"
+        manifest_items.append(
+            f'    <item id="{item_id}" href="{href}" media-type="application/xhtml+xml"/>'
+        )
+        template = HTML_TEMPLATE if has_h1 else BODY_HTML_TEMPLATE
+        html_files[href] = template.format(title=label, body=body)
+        if in_ncx:
+            nav_points.append(NAV_POINT_TEMPLATE.format(
+                id=f"nav{i}", order=len(nav_points) + 1, label=label, src=href
+            ))
+
+    spine_items = [f'    <itemref idref="s{i + 1}"/>' for i in range(len(sections))]
+
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="Calibre Split Book",
+        author="Test Author",
+        year="2024",
+        title_slug="calibre-split-book",
+        manifest_items="\n".join(manifest_items),
+        spine_items="\n".join(spine_items),
+        extra_metadata="",
+    )
+    ncx_xml = NCX_TEMPLATE.format(title="Calibre Split Book", nav_points="\n".join(nav_points))
+
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+    return out_path
+
+
+def test_convert_falls_back_to_merge_mode_when_chapter_bodies_are_split(tmp_path: Path):
+    """Regression: HarperCollins/Anna's-Archive Calibre-processed EPUBs put
+    the chapter body in `_split_NNN.html` files NOT referenced in the NCX.
+    Section-mode reads only the wrapper file under each NCX entry, leaving
+    every chapter's body near-empty. The fallback should kick in and
+    recover full chapter bodies via merge mode.
+    """
+    epub_path = _build_calibre_split_spine_epub(tmp_path / "calibre_split.epub")
+    out = tmp_path / "out.md"
+
+    result = convert_epub_to_markdown(epub_path, out)
+
+    assert result.chapter_count == 3
+    assert result.conversion_quality == "high"
+    assert result.mode == "structured"
+
+    text = out.read_text()
+    # Word-numbered chapter titles must have been digit-converted in fallback.
+    ch1 = text.index("# Chapter 1 — Origins")
+    ch2 = text.index("# Chapter 2 — Growth")
+    ch3 = text.index("# Chapter 3 — Reflection")
+    # Merge mode pulls in body content that section mode missed.
+    assert "ORIGINS-BODY" in text[ch1:ch2]
+    assert "GROWTH-BODY" in text[ch2:ch3]
+    assert "REFLECTION-BODY" in text[ch3:]
