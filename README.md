@@ -21,6 +21,17 @@ cross-linked knowledge graph.
   and writes a compounding Obsidian vault (summaries, concepts, entities,
   comparisons, verify-queries).
 
+## Disclaimer
+
+`/download-book` is intended for retrieving digital copies of books you
+already legally own (e.g., a hardcover on your shelf, a Kindle purchase,
+a library loan). Copyright law in your jurisdiction governs what you may
+download; in many places format-shifting a book you own is a grey area
+at best. You are solely responsible for ensuring your use complies with
+applicable law and the terms of service of any source. The authors of
+this project do not condone piracy and ship no content — the tool only
+automates a search you could perform manually.
+
 ## Requirements
 
 - Python 3.11+
