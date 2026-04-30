@@ -21,6 +21,8 @@ cross-linked knowledge graph.
   and writes a compounding Obsidian vault (summaries, concepts, entities,
   comparisons, verify-queries).
 
+![Obsidian graph view of the wiki produced by the pipeline](docs/graph-view.png)
+
 ## Disclaimer
 
 `/download-book` is intended for retrieving digital copies of books you
