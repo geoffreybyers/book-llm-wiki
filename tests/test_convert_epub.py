@@ -974,3 +974,109 @@ def test_convert_falls_back_to_merge_mode_when_chapter_bodies_are_split(tmp_path
     assert "ORIGINS-BODY" in text[ch1:ch2]
     assert "GROWTH-BODY" in text[ch2:ch3]
     assert "REFLECTION-BODY" in text[ch3:]
+
+
+def _build_kobo_span_epub(out_path: Path) -> Path:
+    """Build an EPUB whose chapter bodies wrap every text token in inline
+    ``<span class="koboSpan">`` elements.
+
+    Mirrors the structure of Simon & Schuster trade-nonfiction distributions
+    (real example: Tiago Forte, *The PARA Method*, Atria 2023). The koboSpan
+    style block is injected into each chapter ``<head>``, and body prose is
+    fragmented across many inline spans — the pattern epub2md silently drops.
+    """
+    import zipfile
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, MIMETYPE,
+    )
+
+    kobo_html_template = """<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+<title>{title}</title>
+<style type="text/css" id="koboSpanStyle">.koboSpan {{ -webkit-text-combine: inherit; }}</style>
+</head>
+<body>
+<section role="doc-chapter">
+<h2><span class="koboSpan" id="kobo.1.1">{title}</span></h2>
+<p><span class="koboSpan" id="kobo.2.1">{body}</span></p>
+</section>
+</body></html>"""
+
+    sections = [
+        ("Cover", "Cover content"),
+        ("Chapter 1: First", "KOBO-BODY-FIRST " * 30),
+        ("Chapter 2: Second", "KOBO-BODY-SECOND " * 30),
+    ]
+
+    manifest_items = []
+    spine_items = []
+    nav_points = []
+    html_files = {}
+    for i, (label, body) in enumerate(sections, start=1):
+        item_id = f"s{i}"
+        href = f"section-{i}.xhtml"
+        manifest_items.append(
+            f'    <item id="{item_id}" href="{href}" media-type="application/xhtml+xml"/>'
+        )
+        spine_items.append(f'    <itemref idref="{item_id}"/>')
+        nav_points.append(NAV_POINT_TEMPLATE.format(id=item_id, order=i, label=label, src=href))
+        html_files[href] = kobo_html_template.format(title=label, body=body)
+
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="Kobo Span Book", author="A", year="2024", title_slug="kobo-span-book",
+        manifest_items="\n".join(manifest_items),
+        spine_items="\n".join(spine_items),
+        extra_metadata="",
+    )
+    ncx_xml = NCX_TEMPLATE.format(title="Kobo Span Book", nav_points="\n".join(nav_points))
+
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+    return out_path
+
+
+def test_is_kobo_span_epub_detects_kobo_styled_xhtml(tmp_path: Path):
+    """`is_kobo_span_epub` must fire on EPUBs whose body text is wrapped in
+    ``<span class="koboSpan">`` (the Simon & Schuster / Kobo distribution
+    pattern that epub2md silently drops)."""
+    from book_llm_wiki.convert.epub import is_kobo_span_epub
+    epub_path = _build_kobo_span_epub(tmp_path / "kobo.epub")
+    assert is_kobo_span_epub(epub_path)
+
+
+def test_is_kobo_span_epub_not_falsely_detected(normal_epub: Path):
+    """A normal publisher EPUB without koboSpan markers must NOT be flagged."""
+    from book_llm_wiki.convert.epub import is_kobo_span_epub
+    assert not is_kobo_span_epub(normal_epub)
+
+
+def test_convert_kobo_span_epub_extracts_body_via_pages_fallback(tmp_path: Path):
+    """End-to-end: a kobo-styled EPUB must route through the direct-XHTML
+    extraction path and recover real chapter bodies, not just the headings.
+
+    Regression: before the koboSpan detector was added, this EPUB family
+    silently produced ~37-byte chapter files (just the title repeated) under
+    both epub2md section-mode and merge-mode. Real-case repro was Tiago
+    Forte's *The PARA Method* (Atria, 2023).
+    """
+    epub_path = _build_kobo_span_epub(tmp_path / "kobo.epub")
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+
+    text = out.read_text()
+    assert "# Front Matter — Cover" in text
+    assert "# Chapter 1 — Chapter 1: First" in text
+    assert "# Chapter 2 — Chapter 2: Second" in text
+    # Body text wrapped in koboSpan tags must be preserved.
+    assert "KOBO-BODY-FIRST" in text
+    assert "KOBO-BODY-SECOND" in text
+    assert result.chapter_count == 2
+    assert result.conversion_quality == "high"
+    assert result.mode == "structured"
