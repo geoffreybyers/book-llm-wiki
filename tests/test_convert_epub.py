@@ -1080,3 +1080,183 @@ def test_convert_kobo_span_epub_extracts_body_via_pages_fallback(tmp_path: Path)
     assert result.chapter_count == 2
     assert result.conversion_quality == "high"
     assert result.mode == "structured"
+
+
+def _build_ncx_points_to_stub_epub(out_path: Path) -> Path:
+    """Build an EPUB whose NCX entries point at small "Action Exercises" stub
+    files while substantially larger body files exist unreferenced in the
+    same manifest.
+
+    Mirrors the Brian Tracy *The Psychology of Selling* (Thomas Nelson 2004)
+    structure: each chapter has two manifest XHTML files — a stub and a body.
+    The NCX targets the stubs (which contain only a numbered exercise list,
+    too short to be a real chapter but too long to trip the existing empty-
+    chapter detector's 25-word floor). The body files are in the manifest
+    and spine but never referenced from the NCX.
+    """
+    import zipfile
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, MIMETYPE,
+    )
+
+    body_template = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>{title}</title></head>
+<body>
+<h1>{title}</h1>
+<p>{body}</p>
+</body></html>"""
+
+    stub_template = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>{title} Action Exercises</title></head>
+<body>
+<p>ACTION EXERCISES</p>
+<p>1. Decide today to apply this lesson immediately.</p>
+<p>2. Visualize yourself implementing this approach successfully.</p>
+<p>3. Write down three specific actions you will take this week.</p>
+<p>4. Identify one obstacle and plan how to overcome it.</p>
+<p>5. Share your commitment with a trusted colleague today.</p>
+</body></html>"""
+
+    # Three chapters, each with a body file (large) and a stub file (small).
+    # NCX targets the stubs; body files are unreferenced.
+    chapters = [
+        ("Chapter 1: First", "BODY-OF-FIRST " * 800),
+        ("Chapter 2: Second", "BODY-OF-SECOND " * 800),
+        ("Chapter 3: Third", "BODY-OF-THIRD " * 800),
+    ]
+
+    manifest_items = []
+    spine_items = []
+    nav_points = []
+    html_files = {}
+
+    item_idx = 0
+    for ch_idx, (title, body) in enumerate(chapters, start=1):
+        # Body file: large, not referenced by NCX
+        item_idx += 1
+        body_id = f"s{item_idx}"
+        body_href = f"chapter-{ch_idx}-body.xhtml"
+        manifest_items.append(
+            f'    <item id="{body_id}" href="{body_href}" media-type="application/xhtml+xml"/>'
+        )
+        spine_items.append(f'    <itemref idref="{body_id}"/>')
+        html_files[body_href] = body_template.format(title=title, body=body)
+
+        # Stub file: small, IS referenced by NCX
+        item_idx += 1
+        stub_id = f"s{item_idx}"
+        stub_href = f"chapter-{ch_idx}-stub.xhtml"
+        manifest_items.append(
+            f'    <item id="{stub_id}" href="{stub_href}" media-type="application/xhtml+xml"/>'
+        )
+        spine_items.append(f'    <itemref idref="{stub_id}"/>')
+        html_files[stub_href] = stub_template.format(title=title)
+
+        # NCX points at the STUB, not the body
+        nav_points.append(NAV_POINT_TEMPLATE.format(
+            id=stub_id, order=ch_idx, label=title, src=stub_href,
+        ))
+
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="NCX Stub Book", author="A", year="2024", title_slug="ncx-stub-book",
+        manifest_items="\n".join(manifest_items),
+        spine_items="\n".join(spine_items),
+        extra_metadata="",
+    )
+    ncx_xml = NCX_TEMPLATE.format(title="NCX Stub Book", nav_points="\n".join(nav_points))
+
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+    return out_path
+
+
+def test_section_mode_routed_to_stubs_detects_ncx_stub_pattern(tmp_path: Path):
+    """``_section_mode_routed_to_stubs`` must fire on EPUBs where the NCX
+    targets small stub XHTML files while substantially larger body files
+    exist unreferenced in the same manifest (Tracy pattern)."""
+    from book_llm_wiki.convert.epub import (
+        _section_mode_routed_to_stubs,
+        _xhtml_manifest_hrefs,
+        epub_structure,
+    )
+    from urllib.parse import unquote
+
+    epub_path = _build_ncx_points_to_stub_epub(tmp_path / "ncx_stub.epub")
+    manifest_hrefs = _xhtml_manifest_hrefs(epub_path)
+    pos_by_href = {h: i for i, h in enumerate(manifest_hrefs, start=1)}
+
+    structure = epub_structure(epub_path)
+    deduped_structure = []
+    seen = set()
+    for s in structure:
+        bare = unquote(s["src"].split("#", 1)[0])
+        position = pos_by_href.get(bare)
+        if position is None or position in seen:
+            continue
+        seen.add(position)
+        deduped_structure.append({**s, "_position": position})
+
+    assert _section_mode_routed_to_stubs(epub_path, deduped_structure, manifest_hrefs)
+
+
+def test_section_mode_routed_to_stubs_not_falsely_detected(normal_epub: Path):
+    """A normal publisher EPUB where every NCX entry targets a substantive
+    body file must NOT be flagged as NCX-points-to-stub."""
+    from book_llm_wiki.convert.epub import (
+        _section_mode_routed_to_stubs,
+        _xhtml_manifest_hrefs,
+        epub_structure,
+    )
+    from urllib.parse import unquote
+
+    manifest_hrefs = _xhtml_manifest_hrefs(normal_epub)
+    pos_by_href = {h: i for i, h in enumerate(manifest_hrefs, start=1)}
+
+    structure = epub_structure(normal_epub)
+    deduped_structure = []
+    seen = set()
+    for s in structure:
+        bare = unquote(s["src"].split("#", 1)[0])
+        position = pos_by_href.get(bare)
+        if position is None or position in seen:
+            continue
+        seen.add(position)
+        deduped_structure.append({**s, "_position": position})
+
+    assert not _section_mode_routed_to_stubs(normal_epub, deduped_structure, manifest_hrefs)
+
+
+def test_convert_ncx_stub_epub_recovers_body_via_spine_extraction(tmp_path: Path):
+    """End-to-end: a Tracy-style EPUB (NCX points at small action-exercise
+    stubs while larger body files exist unreferenced in the same manifest)
+    must route through ``_convert_via_spine_body_extraction`` and recover the
+    actual body content rather than emitting only the stubs.
+
+    Regression: before the NCX-points-to-stub detector was added, this EPUB
+    family silently produced ~250-byte chapter sections (the action-exercise
+    stub content only) under standard section-mode conversion. Real-case
+    repro was Brian Tracy's *The Psychology of Selling* (Thomas Nelson 2004).
+    """
+    epub_path = _build_ncx_points_to_stub_epub(tmp_path / "ncx_stub.epub")
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+
+    text = out.read_text()
+    # Body content from the unreferenced files must be present.
+    assert "BODY-OF-FIRST" in text
+    assert "BODY-OF-SECOND" in text
+    assert "BODY-OF-THIRD" in text
+    # And the stub-file content must NOT dominate (the spine-extraction path
+    # filters out below-floor stubs entirely).
+    # Three chapters were emitted, one per body file.
+    assert result.chapter_count == 3
+    assert result.conversion_quality == "high"
+    assert result.mode == "structured"

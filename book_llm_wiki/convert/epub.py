@@ -630,6 +630,14 @@ _WORD_TO_NUM = {
 
 _SECTION_MODE_EMPTY_CHAPTER_WORD_FLOOR = 25
 
+# Thresholds for the NCX-points-to-stub detector. An XHTML file under
+# 3 KB is almost always a navigation/copyright/title-page/short-summary
+# stub; an XHTML file over 8 KB almost always contains substantive prose.
+# The 5x bytes-ratio gate ensures we only fire when the unreferenced
+# files clearly dominate the EPUB's body content.
+_SECTION_MODE_STUB_FILE_BYTE_THRESHOLD = 3000
+_SECTION_MODE_BODY_FILE_BYTE_THRESHOLD = 8000
+
 
 def _section_mode_chapters_look_empty(parts: list[str]) -> bool:
     """Detect the Calibre-pre-split-spine pattern that breaks section-mode body lookup.
@@ -660,6 +668,60 @@ def _section_mode_chapters_look_empty(parts: list[str]) -> bool:
         return False
     short = sum(1 for w in chapter_word_counts if w < _SECTION_MODE_EMPTY_CHAPTER_WORD_FLOOR)
     return short >= 3 and short / len(chapter_word_counts) >= 0.5
+
+
+def _section_mode_routed_to_stubs(
+    epub_path: Path,
+    deduped_structure: list[dict],
+    manifest_hrefs: list[str],
+) -> bool:
+    """Detect EPUBs where the NCX points at small stub files while
+    substantially larger body files exist unreferenced in the same manifest.
+
+    Failure pattern (real example: Brian Tracy's *The Psychology of Selling*,
+    Thomas Nelson 2004): each chapter has two manifest XHTML files — a small
+    "Action Exercises" stub (~1-2 KB, ~100-300 words) and a separate body
+    file (12-84 KB, several thousand words). The NCX entries point at the
+    stubs, so section-mode produces near-empty chapters even though the body
+    files are present in the EPUB. The ``_section_mode_chapters_look_empty``
+    detector does not fire on this pattern because the stubs contain
+    enough text (numbered exercises plus a quote) to clear its 25-word floor.
+
+    Detection: at least 3 NCX-referenced files are below the stub
+    byte-threshold, AND at least 3 unreferenced manifest XHTML files are
+    above the body byte-threshold, AND the unreferenced files' total bytes
+    are >= 5x the referenced files' total bytes. The 5x gate ensures we
+    only flag EPUBs where the unreferenced files clearly dominate the
+    body content, avoiding false positives on EPUBs with a few small
+    front-matter files alongside normal-length chapters.
+    """
+    referenced_positions = {s["_position"] for s in deduped_structure}
+    if not referenced_positions:
+        return False
+
+    with zipfile.ZipFile(epub_path) as zf:
+        opf_path = _find_opf_path(zf)
+        opf_dir = str(Path(opf_path).parent) + "/" if "/" in opf_path else ""
+
+        ref_bytes: list[int] = []
+        unref_bytes: list[int] = []
+        for i, href in enumerate(manifest_hrefs, start=1):
+            try:
+                size = zf.getinfo(f"{opf_dir}{href}").file_size
+            except KeyError:
+                continue
+            if i in referenced_positions:
+                ref_bytes.append(size)
+            else:
+                unref_bytes.append(size)
+
+    short_refs = sum(1 for b in ref_bytes if b < _SECTION_MODE_STUB_FILE_BYTE_THRESHOLD)
+    large_unrefs = sum(1 for b in unref_bytes if b > _SECTION_MODE_BODY_FILE_BYTE_THRESHOLD)
+    if short_refs < 3 or large_unrefs < 3:
+        return False
+    if sum(ref_bytes) == 0:
+        return True
+    return sum(unref_bytes) >= 5 * sum(ref_bytes)
 
 
 def _convert_via_merge_mode_with_section_labels(
@@ -772,6 +834,101 @@ def _convert_via_merge_mode_with_section_labels(
         parts.append(f"{heading}\n\n{body}\n")
 
     out_path.write_text("\n".join(parts))
+    return ConversionResult(
+        chapter_count=chapter_num,
+        conversion_quality="high",
+        mode="structured",
+    )
+
+
+def _convert_via_spine_body_extraction(
+    epub_path: Path, out_path: Path
+) -> ConversionResult:
+    """Fallback for EPUBs where the NCX points at stub files while the body
+    content lives in unreferenced manifest XHTML files.
+
+    Used when ``_section_mode_routed_to_stubs`` detects the failure pattern.
+    Strategy: ignore the NCX entirely, walk the manifest XHTML files in
+    document order, extract text from each via ``_extract_xhtml_text``, drop
+    any file whose XHTML byte size is below the stub byte-threshold, derive
+    a chapter title from the file's first non-empty line, and emit the
+    standard front/preamble/part/chapter/back classification using that
+    title.
+
+    The byte-size filter (rather than a word-count filter) is critical
+    because the failure pattern is defined at the publisher-XHTML-structure
+    level: stub files are systematically smaller than body files in the
+    same manifest. Word count of the extracted prose is a less reliable
+    signal because numbered-exercise stubs can run to 100-300 words even
+    though they're clearly not chapter bodies.
+
+    Real example: Brian Tracy's *The Psychology of Selling* (Thomas Nelson,
+    2004), where each chapter has both a small "Action Exercises" stub
+    (1-2 KB) and a larger body file (12-84 KB) in the manifest, with the
+    NCX pointing at the stubs. Merge mode would emit duplicate content
+    (both stub and body for each chapter); this path emits exactly one
+    section per substantive file in spine order.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    manifest_hrefs = _xhtml_manifest_hrefs(epub_path)
+
+    with zipfile.ZipFile(epub_path) as zf:
+        opf_path = _find_opf_path(zf)
+        opf_dir = str(Path(opf_path).parent) + "/" if "/" in opf_path else ""
+
+        chapter_num = 0
+        parts: list[str] = []
+        for href in manifest_hrefs:
+            full_path = f"{opf_dir}{href}"
+            try:
+                size = zf.getinfo(full_path).file_size
+            except KeyError:
+                continue
+            if size < _SECTION_MODE_STUB_FILE_BYTE_THRESHOLD:
+                # Skip stub / navigation / copyright files. The byte-size
+                # signal is more reliable than extracted-word-count here
+                # because the failure pattern is publisher-XHTML-structural:
+                # stubs are systematically small XHTML regardless of prose
+                # density, while body files are systematically large.
+                continue
+            try:
+                xhtml = zf.read(full_path).decode("utf-8", errors="replace")
+            except KeyError:
+                continue
+            body = _extract_xhtml_text(xhtml)
+            wc = len(body.split())
+            if wc == 0:
+                continue
+
+            # Derive chapter title from the file's first non-empty line.
+            # Falls back to the file basename when the body has no headings.
+            lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+            title = lines[0] if lines else Path(href).stem
+            # Strip a leading bare chapter number ("2 SET AND ACHIEVE..." →
+            # "SET AND ACHIEVE...") so the standard chapter classifier can
+            # find the title without the prefix duplicating the auto-numbering.
+            stripped_title = re.sub(r"^\d+\s+", "", title).strip()
+            classify_target = stripped_title or title
+
+            cls = classify_section(classify_target)
+            if cls == SectionClass.PART:
+                if wc < _PART_BODY_MIN_WORDS:
+                    continue
+                heading = f"# Part — {classify_target}"
+            elif cls == SectionClass.CHAPTER:
+                chapter_num += 1
+                heading = f"# Chapter {chapter_num} — {classify_target}"
+            elif cls == SectionClass.PREAMBLE:
+                heading = f"# Preamble — {classify_target}"
+            elif cls == SectionClass.FRONT:
+                heading = f"# Front Matter — {classify_target}"
+            else:
+                heading = f"# Back Matter — {classify_target}"
+            parts.append(f"{heading}\n\n{body}\n")
+
+        out_path.write_text("\n".join(parts))
+
     return ConversionResult(
         chapter_count=chapter_num,
         conversion_quality="high",
@@ -932,6 +1089,17 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         # use that output instead.
         if _section_mode_chapters_look_empty(parts):
             return _convert_via_merge_mode_with_section_labels(epub_path, out_path)
+
+        # Detect the NCX-points-to-stub pattern: NCX-referenced files are
+        # small stubs (action exercises, summaries) while substantially larger
+        # body files exist unreferenced in the same manifest. Section-mode
+        # produces non-empty but stub-only chapters (e.g. ~200 words each)
+        # that don't trigger the empty-chapter detector above. Real example:
+        # Brian Tracy's *The Psychology of Selling* (Thomas Nelson 2004).
+        # Re-run via spine-body extraction (which ignores the NCX and walks
+        # manifest XHTML in document order, skipping stubs).
+        if _section_mode_routed_to_stubs(epub_path, deduped_structure, manifest_hrefs):
+            return _convert_via_spine_body_extraction(epub_path, out_path)
 
         out_path.write_text("\n".join(parts))
         _copy_images(section_dir)
