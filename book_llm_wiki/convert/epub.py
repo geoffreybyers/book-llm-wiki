@@ -638,6 +638,229 @@ _SECTION_MODE_EMPTY_CHAPTER_WORD_FLOOR = 25
 _SECTION_MODE_STUB_FILE_BYTE_THRESHOLD = 3000
 _SECTION_MODE_BODY_FILE_BYTE_THRESHOLD = 8000
 
+# Publisher CSS classes that mark chapter / part / preamble / back-matter
+# titles inside <p> tags. Wiley uses chaptertitle / parttitle / prefacetitle /
+# mattertitle / forewordtitle / appendixtitle; other Adobe-InDesign-built
+# trade EPUBs use the same family with minor variations. Order matters —
+# the first matching class wins for section classification.
+_PUBLISHER_TITLE_CLASSES = {
+    "chaptertitle": "chapter",
+    "chapternumber": "chapter",
+    "parttitle": "part",
+    "partnumber": "part",
+    "prefacetitle": "preamble",
+    "forewordtitle": "preamble",
+    "introtitle": "preamble",
+    "introductiontitle": "preamble",
+    "mattertitle": "back",
+    "appendixtitle": "back",
+    "afterwordtitle": "back",
+}
+
+# Filename stems that map to a known section class even without a publisher
+# title class. Wiley-style "foreword.html" / "AuthorsNote.html" /
+# "FinalThoughts.html" lose their natural classification when stripped of
+# their <p class="mattertitle"> markup, because mattertitle is reused for
+# both prefatory and back matter in the Wiley template.
+_KNOWN_FILENAME_SECTION_CLASS = {
+    "foreword": ("preamble", "Foreword"),
+    "preface": ("preamble", "Preface"),
+    "introduction": ("preamble", "Introduction"),
+    "authorsnote": ("preamble", "Author's Note"),
+    "authornote": ("preamble", "Author's Note"),
+    "prologue": ("preamble", "Prologue"),
+    "finalthoughts": ("back", "Final Thoughts"),
+    "epilogue": ("back", "Epilogue"),
+    "afterword": ("back", "Afterword"),
+    "abouttheauthor": ("filter", ""),
+    "acknowledgments": ("filter", ""),
+    "acknowledgements": ("filter", ""),
+    "copyright": ("filter", ""),
+    "dedication": ("filter", ""),
+    "halftitle": ("filter", ""),
+    "title": ("filter", ""),
+    "cover": ("filter", ""),
+    "contents": ("filter", ""),
+    "toc": ("filter", ""),
+    "index": ("filter", ""),
+    "references": ("filter", ""),
+    "bibliography": ("filter", ""),
+    "glossary": ("filter", ""),
+}
+
+
+def _extract_publisher_class_title(xhtml: str) -> tuple[str, str] | None:
+    """Find a publisher-class-tagged title in an XHTML body.
+
+    Returns (section_class, title_text) where section_class is one of
+    'chapter', 'part', 'preamble', 'back'. Returns None when no recognized
+    title class is present.
+
+    Strategy: scan ``<p class="...">...</p>`` paragraphs in document order
+    for any class in ``_PUBLISHER_TITLE_CLASSES``. Many Wiley-style chapters
+    have *two* class-tagged paragraphs — a label ("CHAPTER 1", "Module ONE")
+    followed by the real title — so we prefer a non-label paragraph when
+    one is available, falling back to the first match otherwise.
+    """
+    label_only = re.compile(
+        r"^(?:CHAPTER|PART|MODULE|SECTION|BOOK|APPENDIX)\s+"
+        r"(?:[IVXLCDM]+|\d+|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|"
+        r"ELEVEN|TWELVE|THIRTEEN|FOURTEEN|FIFTEEN|SIXTEEN|SEVENTEEN|EIGHTEEN|"
+        r"NINETEEN|TWENTY)$",
+        re.IGNORECASE,
+    )
+
+    matches: list[tuple[str, str]] = []
+    for m in re.finditer(
+        r'<p\s+[^>]*class="([^"]+)"[^>]*>(.*?)</p>',
+        xhtml,
+        re.DOTALL,
+    ):
+        classes = m.group(1).split()
+        for cls in classes:
+            section_cls = _PUBLISHER_TITLE_CLASSES.get(cls.lower())
+            if section_cls is None:
+                continue
+            text = re.sub(r"<[^>]+>", "", m.group(2)).strip()
+            text = re.sub(r"\s+", " ", text)
+            import html as html_module
+            text = html_module.unescape(text)
+            if text:
+                matches.append((section_cls, text))
+            break  # one section-class per <p>
+
+    if not matches:
+        return None
+
+    # Group consecutive same-section matches; prefer the first non-label
+    # paragraph within each group, falling back to the first match.
+    section_cls = matches[0][0]
+    same_class = [m for m in matches if m[0] == section_cls]
+    for cls, text in same_class:
+        if not label_only.match(text):
+            return (cls, text)
+    return same_class[0]
+
+
+_CHAPTER_SUBFILE_PATTERN = re.compile(
+    r"^chapter[\s_-]*(\d+)([a-z])$", re.IGNORECASE
+)
+
+
+def _chapter_subfile_match(href: str) -> tuple[int, str] | None:
+    """Detect a Wiley-style chapter sub-file (Chapter16a.html, Chapter01b.html).
+
+    The Wiley template splits long chapters across multiple XHTML files —
+    Chapter16.html holds the chapter intro, Chapter16a.html / 16b.html /
+    16c.html hold subsequent sections. Returns ``(chapter_num, suffix)``
+    when ``href``'s basename stem matches the pattern, else None.
+    """
+    stem = Path(href).stem
+    m = _CHAPTER_SUBFILE_PATTERN.match(stem)
+    if m is None:
+        return None
+    return (int(m.group(1)), m.group(2).lower())
+
+
+def _filename_section_class(href: str) -> tuple[str, str] | None:
+    """Classify a manifest XHTML by its filename stem.
+
+    Returns ``(section_class, title)`` where section_class is one of
+    'preamble' / 'back' / 'filter', or None when the stem is not in
+    ``_KNOWN_FILENAME_SECTION_CLASS``. Used as a fallback when an XHTML
+    file lacks publisher class markup (typical for short Wiley front-matter
+    files).
+    """
+    stem = Path(href).stem.lower().replace(" ", "").replace("_", "").replace("-", "")
+    return _KNOWN_FILENAME_SECTION_CLASS.get(stem)
+
+
+def _spine_xhtml_hrefs(epub_path: Path) -> list[str]:
+    """Return XHTML hrefs in spine (reading) order.
+
+    Manifest declaration order is often alphabetic (Wiley, many other
+    publishers); spine order is the actual reading sequence. The
+    spine-body-extraction fallback walks files in spine order so the
+    output reflects the reading order the publisher intends.
+    """
+    with zipfile.ZipFile(epub_path) as zf:
+        opf_path = _find_opf_path(zf)
+        opf = ET.fromstring(_read_zip_text(zf, opf_path))
+
+        manifest_el = opf.find("opf:manifest", OPF_NS)
+        spine_el = opf.find("opf:spine", OPF_NS)
+        if manifest_el is None or spine_el is None:
+            return []
+
+        # id -> href, restricted to xhtml manifest items
+        id_to_href: dict[str, str] = {}
+        for item in manifest_el.findall("opf:item", OPF_NS):
+            mt = item.get("media-type", "")
+            if "xhtml" not in mt and "html" not in mt:
+                continue
+            id_to_href[item.get("id", "")] = item.get("href", "")
+
+        ordered: list[str] = []
+        for itemref in spine_el.findall("opf:itemref", OPF_NS):
+            href = id_to_href.get(itemref.get("idref", ""))
+            if href:
+                ordered.append(href)
+        return ordered
+
+
+def _section_mode_ncx_is_degenerate(
+    epub_path: Path,
+    deduped_structure: list[dict],
+    manifest_hrefs: list[str],
+) -> bool:
+    """Detect EPUBs whose NCX is degenerate (one or zero substantive navPoints)
+    while the spine contains many substantive XHTML files.
+
+    Failure pattern (real example: Michael Port's *Book Yourself Solid*,
+    John Wiley & Sons 2010, Sigil-built): toc.ncx contains exactly one
+    ``<navPoint>`` pointing at ``cover.xml`` while the manifest holds 38
+    XHTML files — foreword, author's note, preface, four part-dividers,
+    sixteen numbered chapters with sub-files, final thoughts. Section-mode
+    extraction emits one chapter heading from cover.xml and silently drops
+    the rest of the book.
+
+    The ``_section_mode_chapters_look_empty`` detector requires ≥3 chapter
+    parts (we have 1); ``_section_mode_routed_to_stubs`` requires ≥3 stub
+    references (we have 1 total). Neither fires.
+
+    Detection: at most one navPoint targets a non-front-matter file, AND
+    at least 3 manifest XHTML files are above the body byte-threshold,
+    AND the unreferenced body bytes dominate the referenced bytes by ≥5×
+    (same gate as ``_section_mode_routed_to_stubs``).
+    """
+    if len(deduped_structure) > 1:
+        return False
+
+    referenced_positions = {s["_position"] for s in deduped_structure}
+
+    with zipfile.ZipFile(epub_path) as zf:
+        opf_path = _find_opf_path(zf)
+        opf_dir = str(Path(opf_path).parent) + "/" if "/" in opf_path else ""
+
+        ref_bytes: list[int] = []
+        unref_bytes: list[int] = []
+        for i, href in enumerate(manifest_hrefs, start=1):
+            try:
+                size = zf.getinfo(f"{opf_dir}{href}").file_size
+            except KeyError:
+                continue
+            if i in referenced_positions:
+                ref_bytes.append(size)
+            else:
+                unref_bytes.append(size)
+
+    large_unrefs = sum(1 for b in unref_bytes if b > _SECTION_MODE_BODY_FILE_BYTE_THRESHOLD)
+    if large_unrefs < 3:
+        return False
+    if sum(ref_bytes) == 0:
+        return True
+    return sum(unref_bytes) >= 5 * sum(ref_bytes)
+
 
 def _section_mode_chapters_look_empty(parts: list[str]) -> bool:
     """Detect the Calibre-pre-split-spine pattern that breaks section-mode body lookup.
@@ -844,34 +1067,40 @@ def _convert_via_merge_mode_with_section_labels(
 def _convert_via_spine_body_extraction(
     epub_path: Path, out_path: Path
 ) -> ConversionResult:
-    """Fallback for EPUBs where the NCX points at stub files while the body
-    content lives in unreferenced manifest XHTML files.
+    """Fallback for EPUBs whose NCX is unreliable — either pointing at stub
+    files while body content lives unreferenced (Tracy pattern) or so
+    degenerate it has just one navPoint while the spine holds the entire
+    book (BYS / Wiley pattern).
 
-    Used when ``_section_mode_routed_to_stubs`` detects the failure pattern.
-    Strategy: ignore the NCX entirely, walk the manifest XHTML files in
-    document order, extract text from each via ``_extract_xhtml_text``, drop
-    any file whose XHTML byte size is below the stub byte-threshold, derive
-    a chapter title from the file's first non-empty line, and emit the
-    standard front/preamble/part/chapter/back classification using that
-    title.
+    Strategy: ignore the NCX entirely, walk the spine in reading order,
+    skip files below the stub byte threshold, and classify each remaining
+    file by — in priority order — (1) publisher CSS-class title markup
+    (Wiley's ``<p class="chaptertitle">`` family), (2) known filename stems
+    ("foreword.html" / "FinalThoughts.html"), (3) the first non-empty line
+    of extracted text.
 
-    The byte-size filter (rather than a word-count filter) is critical
-    because the failure pattern is defined at the publisher-XHTML-structure
-    level: stub files are systematically smaller than body files in the
-    same manifest. Word count of the extracted prose is a less reliable
-    signal because numbered-exercise stubs can run to 100-300 words even
-    though they're clearly not chapter bodies.
+    Wiley splits long chapters across multiple sub-files (Chapter16.html
+    plus Chapter16a/b/c.html); when a sub-file is detected its body is
+    appended to the preceding Chapter section rather than emitted as a
+    new chapter.
 
-    Real example: Brian Tracy's *The Psychology of Selling* (Thomas Nelson,
-    2004), where each chapter has both a small "Action Exercises" stub
-    (1-2 KB) and a larger body file (12-84 KB) in the manifest, with the
-    NCX pointing at the stubs. Merge mode would emit duplicate content
-    (both stub and body for each chapter); this path emits exactly one
-    section per substantive file in spine order.
+    Real examples:
+      - Brian Tracy *The Psychology of Selling* (Thomas Nelson 2004) —
+        NCX points at small Action-Exercise stubs while body files live
+        unreferenced in the same manifest; section-mode produced near-
+        empty chapters (NCX-points-to-stub pattern).
+      - Michael Port *Book Yourself Solid* (John Wiley & Sons 2010) —
+        toc.ncx contains exactly one navPoint pointing at cover.xml while
+        the spine holds 38 substantive XHTML files; section-mode produced
+        a single one-sentence "chapter" (degenerate-NCX pattern).
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    manifest_hrefs = _xhtml_manifest_hrefs(epub_path)
+    spine_hrefs = _spine_xhtml_hrefs(epub_path)
+    if not spine_hrefs:
+        # No usable spine — fall back to manifest order so callers built
+        # against the older API (and our older tests) still get output.
+        spine_hrefs = _xhtml_manifest_hrefs(epub_path)
 
     with zipfile.ZipFile(epub_path) as zf:
         opf_path = _find_opf_path(zf)
@@ -879,49 +1108,114 @@ def _convert_via_spine_body_extraction(
 
         chapter_num = 0
         parts: list[str] = []
-        for href in manifest_hrefs:
+
+        for href in spine_hrefs:
             full_path = f"{opf_dir}{href}"
             try:
                 size = zf.getinfo(full_path).file_size
             except KeyError:
                 continue
-            if size < _SECTION_MODE_STUB_FILE_BYTE_THRESHOLD:
-                # Skip stub / navigation / copyright files. The byte-size
-                # signal is more reliable than extracted-word-count here
-                # because the failure pattern is publisher-XHTML-structural:
-                # stubs are systematically small XHTML regardless of prose
-                # density, while body files are systematically large.
+
+            # Wiley-style chapter sub-files (Chapter16a/b/c.html) extend
+            # the preceding Chapter rather than starting a new one. We
+            # check this BEFORE the byte-size gate because some sub-files
+            # are deliberately small.
+            sub = _chapter_subfile_match(href)
+            if sub is not None and parts and parts[-1].startswith("# Chapter "):
+                try:
+                    xhtml = zf.read(full_path).decode("utf-8", errors="replace")
+                except KeyError:
+                    continue
+                sub_body = _extract_xhtml_text(xhtml).strip()
+                if sub_body:
+                    parts[-1] = parts[-1].rstrip() + "\n\n" + sub_body + "\n"
                 continue
+
             try:
                 xhtml = zf.read(full_path).decode("utf-8", errors="replace")
             except KeyError:
                 continue
+
+            # Small files are usually navigation/copyright/title stubs and
+            # should be dropped. EXCEPT when they carry a publisher-class
+            # title — short Wiley Part-divider files (1-3 KB intros tagged
+            # with class="parttitle") are genuine content we want to keep.
+            if size < _SECTION_MODE_STUB_FILE_BYTE_THRESHOLD:
+                if _extract_publisher_class_title(xhtml) is None:
+                    continue
+
             body = _extract_xhtml_text(xhtml)
             wc = len(body.split())
             if wc == 0:
                 continue
 
-            # Derive chapter title from the file's first non-empty line.
-            # Falls back to the file basename when the body has no headings.
-            lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
-            title = lines[0] if lines else Path(href).stem
-            # Strip a leading bare chapter number ("2 SET AND ACHIEVE..." →
-            # "SET AND ACHIEVE...") so the standard chapter classifier can
-            # find the title without the prefix duplicating the auto-numbering.
-            stripped_title = re.sub(r"^\d+\s+", "", title).strip()
-            classify_target = stripped_title or title
+            # Section-class resolution priority:
+            #   1. Filename stem in the known-classification list (catches
+            #      foreword/AuthorsNote/FinalThoughts/copyright/cover/etc.,
+            #      including the 'filter' verdict that drops a file entirely).
+            #   2. Publisher CSS-class title (Wiley chaptertitle / parttitle /
+            #      prefacetitle / mattertitle family).
+            #   3. Fallback to the first non-empty line of extracted body
+            #      text + the existing classify_section() heuristics.
+            filename_class = _filename_section_class(href)
+            class_title = _extract_publisher_class_title(xhtml)
 
-            cls = classify_section(classify_target)
-            if cls == SectionClass.PART:
+            section_cls: str | None = None
+            classify_target: str = ""
+
+            if filename_class is not None:
+                section_cls, classify_target = filename_class
+                if section_cls == "filter":
+                    continue
+                # Filename gave us 'preamble' or 'back' plus a clean title.
+                # Prefer it over class_title because Wiley reuses
+                # 'mattertitle' for both prefatory and back matter, which
+                # the filename mapping disambiguates.
+            elif class_title is not None:
+                section_cls, classify_target = class_title
+                # For parts, Wiley typically emits TWO parttitle paragraphs
+                # ("Module ONE", "Your Foundation"). Combine them as
+                # "Module ONE: Your Foundation" when both are present.
+                module_match = re.search(
+                    r'<p\s+[^>]*class="(?:parttitle|partnumber)[^"]*"[^>]*>'
+                    r'(\s*Module\s+[A-Za-z]+|\s*Part\s+[A-Za-z\d]+)\s*</p>',
+                    xhtml,
+                    re.IGNORECASE,
+                )
+                if section_cls == "part" and module_match:
+                    label = re.sub(r"\s+", " ", module_match.group(1)).strip()
+                    if label and not classify_target.lower().startswith(label.lower()):
+                        classify_target = f"{label}: {classify_target}"
+
+            if section_cls is None:
+                # Existing fallback path: derive a title from the extracted
+                # text and classify via the legacy heuristics.
+                lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+                title = lines[0] if lines else Path(href).stem
+                stripped_title = re.sub(r"^\d+\s+", "", title).strip()
+                classify_target = stripped_title or title
+                cls_enum = classify_section(classify_target)
+                if cls_enum == SectionClass.PART:
+                    section_cls = "part"
+                elif cls_enum == SectionClass.CHAPTER:
+                    section_cls = "chapter"
+                elif cls_enum == SectionClass.PREAMBLE:
+                    section_cls = "preamble"
+                elif cls_enum == SectionClass.FRONT:
+                    section_cls = "front"
+                else:
+                    section_cls = "back"
+
+            if section_cls == "part":
                 if wc < _PART_BODY_MIN_WORDS:
                     continue
                 heading = f"# Part — {classify_target}"
-            elif cls == SectionClass.CHAPTER:
+            elif section_cls == "chapter":
                 chapter_num += 1
                 heading = f"# Chapter {chapter_num} — {classify_target}"
-            elif cls == SectionClass.PREAMBLE:
+            elif section_cls == "preamble":
                 heading = f"# Preamble — {classify_target}"
-            elif cls == SectionClass.FRONT:
+            elif section_cls == "front":
                 heading = f"# Front Matter — {classify_target}"
             else:
                 heading = f"# Back Matter — {classify_target}"
@@ -1097,8 +1391,18 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         # that don't trigger the empty-chapter detector above. Real example:
         # Brian Tracy's *The Psychology of Selling* (Thomas Nelson 2004).
         # Re-run via spine-body extraction (which ignores the NCX and walks
-        # manifest XHTML in document order, skipping stubs).
+        # the spine in reading order, skipping stubs).
         if _section_mode_routed_to_stubs(epub_path, deduped_structure, manifest_hrefs):
+            return _convert_via_spine_body_extraction(epub_path, out_path)
+
+        # Detect the degenerate-NCX pattern: NCX has 0 or 1 substantive
+        # navPoints while the spine holds many substantive XHTML files.
+        # Section-mode emits one chapter heading from the single navPoint
+        # (typically cover.xml) and silently drops the rest of the book.
+        # The two prior detectors miss this case because each requires ≥3
+        # NCX entries to fire. Real example: Michael Port's *Book Yourself
+        # Solid* (John Wiley & Sons 2010, Sigil-built).
+        if _section_mode_ncx_is_degenerate(epub_path, deduped_structure, manifest_hrefs):
             return _convert_via_spine_body_extraction(epub_path, out_path)
 
         out_path.write_text("\n".join(parts))

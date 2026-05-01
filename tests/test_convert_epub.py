@@ -1260,3 +1260,344 @@ def test_convert_ncx_stub_epub_recovers_body_via_spine_extraction(tmp_path: Path
     assert result.chapter_count == 3
     assert result.conversion_quality == "high"
     assert result.mode == "structured"
+
+
+def _build_degenerate_ncx_wiley_epub(out_path: Path) -> Path:
+    """Build an EPUB whose NCX is degenerate (one stub navPoint pointing at
+    cover.xml) while the spine holds the entire book in Wiley's
+    class-tagged XHTML format.
+
+    Mirrors Michael Port's *Book Yourself Solid* (John Wiley & Sons 2010,
+    Sigil-built): toc.ncx has exactly one ``<navPoint>`` pointing at
+    ``cover.xml`` while the manifest holds 38 substantive XHTML files.
+    Section-mode extracts only the cover and silently drops the rest.
+
+    Includes a Chapter16-with-sub-files (16a/b/c) pattern to exercise the
+    chapter-sub-file merge path.
+    """
+    import zipfile
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, MIMETYPE,
+    )
+
+    # Minimal cover (under stub byte threshold so the stub-filter drops it).
+    cover_xml = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Book Yourself Solid</title></head>
+<body><div><p>Book Yourself Solid</p></div></body></html>"""
+
+    chapter_template = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Wiley Test Book</title></head>
+<body>
+<div class="story">
+<p class="chaptertitle">CHAPTER {num}</p>
+<p class="chaptertitle">{title}</p>
+<p class="para">{body}</p>
+</div>
+</body></html>"""
+
+    chapter_subfile_template = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Wiley Test Book</title></head>
+<body>
+<div class="story">
+<p class="chaptertitle">PART {part}</p>
+<p class="chaptertitle">{title}</p>
+<p class="para">{body}</p>
+</div>
+</body></html>"""
+
+    part_template = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Wiley Test Book</title></head>
+<body>
+<div class="story">
+<p class="parttitle">Module {module}</p>
+<p class="parttitle">{title}</p>
+<p class="paraaftertitle">{body}</p>
+</div>
+</body></html>"""
+
+    foreword_xml = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Wiley Test Book</title></head>
+<body><div class="story">
+<p class="mattertitle">Foreword</p>
+<p class="para">""" + ("FOREWORD-BODY " * 800) + """</p>
+</div></body></html>"""
+
+    preface_xml = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Wiley Test Book</title></head>
+<body><div class="story">
+<p class="prefacetitle">Preface</p>
+<p class="paraaftertitle">""" + ("PREFACE-BODY " * 800) + """</p>
+</div></body></html>"""
+
+    final_thoughts_xml = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Wiley Test Book</title></head>
+<body><div class="story">
+<p class="mattertitle">Final Thoughts</p>
+<p class="para">""" + ("FINAL-THOUGHTS-BODY " * 800) + """</p>
+</div></body></html>"""
+
+    # Filter file (acknowledgments, must be dropped by filename mapping)
+    acknowledgments_xml = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Wiley Test Book</title></head>
+<body><div class="story">
+<p class="mattertitle">Acknowledgments</p>
+<p class="para">""" + ("ACK-BODY " * 200) + """</p>
+</div></body></html>"""
+
+    # Files in the order the spine should reference them
+    spine_files = [
+        ("cover.xml", cover_xml),
+        ("acknowledgments.html", acknowledgments_xml),
+        ("foreword.html", foreword_xml),
+        ("Preface.html", preface_xml),
+        ("Part01.html", part_template.format(
+            module="ONE", title="Foundation", body="MODULE-1-INTRO " * 800,
+        )),
+        ("Chapter01.html", chapter_template.format(
+            num="1", title="The First Principle", body="CH1-BODY " * 1500,
+        )),
+        ("Chapter02.html", chapter_template.format(
+            num="2", title="The Second Principle", body="CH2-BODY " * 1500,
+        )),
+        ("Chapter16.html", chapter_template.format(
+            num="16", title="The Long Chapter", body="CH16-INTRO " * 1500,
+        )),
+        ("Chapter16a.html", chapter_subfile_template.format(
+            part="1", title="Part One Detail", body="CH16-SUB-A " * 1500,
+        )),
+        ("Chapter16b.html", chapter_subfile_template.format(
+            part="2", title="Part Two Detail", body="CH16-SUB-B " * 1500,
+        )),
+        ("FinalThoughts.html", final_thoughts_xml),
+    ]
+
+    manifest_items = []
+    spine_items = []
+    html_files = {}
+    for idx, (href, html) in enumerate(spine_files, start=1):
+        item_id = f"item{idx}"
+        manifest_items.append(
+            f'    <item id="{item_id}" href="{href}" media-type="application/xhtml+xml"/>'
+        )
+        spine_items.append(f'    <itemref idref="{item_id}"/>')
+        html_files[href] = html
+
+    # Degenerate NCX: ONE navPoint pointing at cover.xml
+    nav_point = NAV_POINT_TEMPLATE.format(
+        id="item1", order=1, label="Start", src="cover.xml",
+    )
+
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="Wiley Test Book", author="Test", year="2010",
+        title_slug="wiley-test",
+        manifest_items="\n".join(manifest_items),
+        spine_items="\n".join(spine_items),
+        extra_metadata="",
+    )
+    ncx_xml = NCX_TEMPLATE.format(title="Wiley Test Book", nav_points=nav_point)
+
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+    return out_path
+
+
+def test_section_mode_ncx_is_degenerate_detects_single_navpoint_pattern(tmp_path: Path):
+    """``_section_mode_ncx_is_degenerate`` must fire on EPUBs whose NCX has
+    a single navPoint while the spine holds many substantive XHTML files
+    (BYS / Wiley pattern)."""
+    from book_llm_wiki.convert.epub import (
+        _section_mode_ncx_is_degenerate,
+        _xhtml_manifest_hrefs,
+        epub_structure,
+    )
+    from urllib.parse import unquote
+
+    epub_path = _build_degenerate_ncx_wiley_epub(tmp_path / "wiley.epub")
+    manifest_hrefs = _xhtml_manifest_hrefs(epub_path)
+    pos_by_href = {h: i for i, h in enumerate(manifest_hrefs, start=1)}
+
+    structure = epub_structure(epub_path)
+    deduped_structure = []
+    seen = set()
+    for s in structure:
+        bare = unquote(s["src"].split("#", 1)[0])
+        position = pos_by_href.get(bare)
+        if position is None or position in seen:
+            continue
+        seen.add(position)
+        deduped_structure.append({**s, "_position": position})
+
+    assert _section_mode_ncx_is_degenerate(epub_path, deduped_structure, manifest_hrefs)
+
+
+def test_section_mode_ncx_is_degenerate_not_falsely_detected(normal_epub: Path):
+    """A normal publisher EPUB with a populated NCX must NOT be flagged as
+    degenerate."""
+    from book_llm_wiki.convert.epub import (
+        _section_mode_ncx_is_degenerate,
+        _xhtml_manifest_hrefs,
+        epub_structure,
+    )
+    from urllib.parse import unquote
+
+    manifest_hrefs = _xhtml_manifest_hrefs(normal_epub)
+    pos_by_href = {h: i for i, h in enumerate(manifest_hrefs, start=1)}
+
+    structure = epub_structure(normal_epub)
+    deduped_structure = []
+    seen = set()
+    for s in structure:
+        bare = unquote(s["src"].split("#", 1)[0])
+        position = pos_by_href.get(bare)
+        if position is None or position in seen:
+            continue
+        seen.add(position)
+        deduped_structure.append({**s, "_position": position})
+
+    assert not _section_mode_ncx_is_degenerate(normal_epub, deduped_structure, manifest_hrefs)
+
+
+def test_convert_degenerate_ncx_wiley_epub_recovers_full_spine(tmp_path: Path):
+    """End-to-end: a Wiley-pattern EPUB (degenerate NCX with one navPoint
+    pointing at cover.xml while the spine holds the full book) must route
+    through ``_convert_via_spine_body_extraction`` and recover all the
+    spine bodies, classify them via Wiley CSS-class titles + filename
+    fallbacks, and merge Chapter sub-files (Chapter16a/b/c) into the
+    preceding Chapter section.
+
+    Regression: before the degenerate-NCX detector was added, this EPUB
+    family produced exactly one ``# Chapter 1 — Start`` heading with the
+    one-sentence cover content; the rest of the book was silently dropped.
+    Real-case repro was Michael Port's *Book Yourself Solid* (Wiley 2010).
+    """
+    epub_path = _build_degenerate_ncx_wiley_epub(tmp_path / "wiley.epub")
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+
+    text = out.read_text()
+
+    # All substantive bodies must be present.
+    assert "FOREWORD-BODY" in text
+    assert "PREFACE-BODY" in text
+    assert "MODULE-1-INTRO" in text
+    assert "CH1-BODY" in text
+    assert "CH2-BODY" in text
+    assert "CH16-INTRO" in text
+    assert "CH16-SUB-A" in text
+    assert "CH16-SUB-B" in text
+    assert "FINAL-THOUGHTS-BODY" in text
+
+    # Filter-list filename (acknowledgments) must be dropped entirely.
+    assert "ACK-BODY" not in text
+
+    # Wiley CSS-class titles must be picked up (not the page-header
+    # "Wiley Test Book" running title).
+    assert "# Preamble — Foreword" in text
+    assert "# Preamble — Preface" in text
+    assert "# Part — Module ONE: Foundation" in text
+    assert "# Chapter 1 — The First Principle" in text
+    assert "# Chapter 2 — The Second Principle" in text
+    assert "# Chapter 3 — The Long Chapter" in text
+    assert "# Back Matter — Final Thoughts" in text
+
+    # Chapter sub-files (16a / 16b) must be merged into the preceding
+    # Chapter and NOT emitted as separate Chapter sections — there should
+    # be exactly 3 chapter headings (Ch01, Ch02, Ch16).
+    assert result.chapter_count == 3
+    assert text.count("# Chapter ") == 3
+
+    # The merged sub-file content must appear AFTER the Ch16 intro, not
+    # before it (sub-file ordering preserves spine order).
+    ch16_pos = text.index("# Chapter 3 — The Long Chapter")
+    sub_a_pos = text.index("CH16-SUB-A")
+    sub_b_pos = text.index("CH16-SUB-B")
+    assert ch16_pos < sub_a_pos < sub_b_pos
+
+    assert result.conversion_quality == "high"
+    assert result.mode == "structured"
+
+
+def test_extract_publisher_class_title_prefers_real_title_over_label():
+    """Wiley chapters typically have two ``<p class="chaptertitle">``
+    paragraphs — a label ("CHAPTER 1") and the real title. The extractor
+    must prefer the real title."""
+    from book_llm_wiki.convert.epub import _extract_publisher_class_title
+
+    xhtml = """<html><body>
+    <p class="chaptertitle">CHAPTER 1</p>
+    <p class="chaptertitle">The Red Velvet Rope Policy</p>
+    <p class="para">Body text here.</p>
+    </body></html>"""
+
+    result = _extract_publisher_class_title(xhtml)
+    assert result == ("chapter", "The Red Velvet Rope Policy")
+
+
+def test_extract_publisher_class_title_falls_back_to_label_when_only_label():
+    """When only a label paragraph is present, the extractor returns it
+    rather than failing — the legacy classify_section path will then
+    derive a sensible heading from it."""
+    from book_llm_wiki.convert.epub import _extract_publisher_class_title
+
+    xhtml = """<html><body>
+    <p class="chaptertitle">CHAPTER 1</p>
+    <p class="para">Body text here.</p>
+    </body></html>"""
+
+    result = _extract_publisher_class_title(xhtml)
+    assert result == ("chapter", "CHAPTER 1")
+
+
+def test_extract_publisher_class_title_returns_none_for_unmarked_xhtml():
+    """A normal XHTML body without publisher class markup returns None,
+    so the legacy fallback path runs."""
+    from book_llm_wiki.convert.epub import _extract_publisher_class_title
+
+    xhtml = """<html><body>
+    <h1>Chapter 1: Origins</h1>
+    <p>Body text here.</p>
+    </body></html>"""
+
+    assert _extract_publisher_class_title(xhtml) is None
+
+
+def test_chapter_subfile_match_recognizes_wiley_pattern():
+    """``_chapter_subfile_match`` recognizes Chapter16a.html-style hrefs
+    and returns (chapter_num, suffix)."""
+    from book_llm_wiki.convert.epub import _chapter_subfile_match
+
+    assert _chapter_subfile_match("Text/Chapter16a.html") == (16, "a")
+    assert _chapter_subfile_match("Chapter01b.xhtml") == (1, "b")
+    assert _chapter_subfile_match("Chapter16.html") is None
+    assert _chapter_subfile_match("Foreword.html") is None
+    assert _chapter_subfile_match("chapter-1-body.xhtml") is None  # the Tracy fixture pattern
+
+
+def test_filename_section_class_classifies_known_stems():
+    """``_filename_section_class`` returns the right (section_class, title)
+    tuple for known filename stems."""
+    from book_llm_wiki.convert.epub import _filename_section_class
+
+    assert _filename_section_class("foreword.html") == ("preamble", "Foreword")
+    assert _filename_section_class("Text/AuthorsNote.html") == ("preamble", "Author's Note")
+    assert _filename_section_class("FinalThoughts.html") == ("back", "Final Thoughts")
+    assert _filename_section_class("acknowledgments.html") == ("filter", "")
+    assert _filename_section_class("cover.xml") == ("filter", "")
+    # Stems not in the map return None (the publisher-class or fallback
+    # path will classify).
+    assert _filename_section_class("Chapter01.html") is None
+    assert _filename_section_class("Part01.html") is None
