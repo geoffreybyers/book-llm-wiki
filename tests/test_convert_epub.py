@@ -1601,3 +1601,223 @@ def test_filename_section_class_classifies_known_stems():
     # path will classify).
     assert _filename_section_class("Chapter01.html") is None
     assert _filename_section_class("Part01.html") is None
+
+
+def _build_part_stubs_with_unref_body_epub(out_path: Path) -> Path:
+    """Build an EPUB whose NCX points at small Part-divider stub XHTML files
+    while substantive Part body lives in supplement XHTML files NOT
+    referenced by NCX but present in spine order between divider and
+    next NCX entry.
+
+    Mirrors Brené Brown's *Dare to Lead* (Random House 2018) structure:
+    the book has correctly-NCX-referenced Chapter body files for early
+    sections (Chapters 1-3), then three Part dividers (p002, p003, p004)
+    NCX-referenced as stubs, with the actual Part body content sitting
+    in unreferenced supplement files (p002-sup1, p003-sup1, bm-sup1) in
+    the spine immediately after each divider.
+
+    The pre-existing detectors all miss this pattern:
+    - ``_section_mode_chapters_look_empty``: chapters 1-3 are non-empty.
+    - ``_section_mode_routed_to_stubs``: ref body bytes (Ch 1-3) outweigh
+      the unref supplement bytes, so the 5x ratio gate fails.
+    - ``_section_mode_ncx_is_degenerate``: NCX has 6 substantive
+      navPoints, not ≤1.
+    """
+    import zipfile
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, MIMETYPE,
+    )
+
+    body_template = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>{title}</title></head>
+<body>
+<h1>{title}</h1>
+<p>{body}</p>
+</body></html>"""
+
+    # Stub: small image-only divider page (Random House p002_r1.xhtml is
+    # ~933 bytes — under the 3000-byte stub threshold).
+    stub_template = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>{title}</title></head>
+<body><div><img alt="{title}" src="part.jpg"/></div></body></html>"""
+
+    spine_files: list[tuple[str, str, bool]] = []  # (href, html, is_ref)
+
+    # Three correctly-referenced chapter body files (Part 1).
+    for idx, label in enumerate(["First", "Second", "Third"], start=1):
+        title = f"Chapter {idx}: {label}"
+        body = f"BODY-OF-CH{idx} " * 800
+        spine_files.append((
+            f"chapter-{idx}.xhtml",
+            body_template.format(title=title, body=body),
+            True,
+        ))
+
+    # Three Parts each with: stub (NCX-ref) + supplement (large, NOT NCX-ref).
+    for part_idx, part_label in enumerate(
+        ["Living Into Our Values", "Braving Trust", "Learning to Rise"],
+        start=2,
+    ):
+        stub_title = f"Part {part_idx}: {part_label}"
+        spine_files.append((
+            f"p{part_idx:03d}.xhtml",
+            stub_template.format(title=stub_title),
+            True,  # stub IS in NCX
+        ))
+        spine_files.append((
+            f"p{part_idx:03d}-sup1.xhtml",
+            body_template.format(
+                title=f"Continued, Part {part_idx}",
+                body=f"BODY-OF-PART{part_idx}-SUP " * 800,
+            ),
+            False,  # supplement is NOT in NCX
+        ))
+
+    manifest_items = []
+    spine_items = []
+    nav_points = []
+    html_files = {}
+
+    for idx, (href, html, _is_ref) in enumerate(spine_files, start=1):
+        item_id = f"s{idx}"
+        manifest_items.append(
+            f'    <item id="{item_id}" href="{href}" media-type="application/xhtml+xml"/>'
+        )
+        spine_items.append(f'    <itemref idref="{item_id}"/>')
+        html_files[href] = html
+
+    nav_order = 1
+    for idx, (href, _html, is_ref) in enumerate(spine_files, start=1):
+        if not is_ref:
+            continue
+        nav_points.append(NAV_POINT_TEMPLATE.format(
+            id=f"nav{nav_order}",
+            order=nav_order,
+            label=href,
+            src=href,
+        ))
+        nav_order += 1
+
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="Part Stubs Book", author="A", year="2018",
+        title_slug="part-stubs-book",
+        manifest_items="\n".join(manifest_items),
+        spine_items="\n".join(spine_items),
+        extra_metadata="",
+    )
+    ncx_xml = NCX_TEMPLATE.format(
+        title="Part Stubs Book",
+        nav_points="\n".join(nav_points),
+    )
+
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+    return out_path
+
+
+def _deduped_structure_for(epub_path: Path):
+    """Helper mirroring the section-mode dedupe step used by the detectors."""
+    from book_llm_wiki.convert.epub import _xhtml_manifest_hrefs, epub_structure
+    from urllib.parse import unquote
+
+    manifest_hrefs = _xhtml_manifest_hrefs(epub_path)
+    pos_by_href = {h: i for i, h in enumerate(manifest_hrefs, start=1)}
+    structure = epub_structure(epub_path)
+    deduped = []
+    seen = set()
+    for s in structure:
+        bare = unquote(s["src"].split("#", 1)[0])
+        position = pos_by_href.get(bare)
+        if position is None or position in seen:
+            continue
+        seen.add(position)
+        deduped.append({**s, "_position": position})
+    return manifest_hrefs, deduped
+
+
+def test_section_mode_part_stubs_with_unref_body_detects_pattern(tmp_path: Path):
+    """``_section_mode_part_stubs_with_unref_body`` must fire on EPUBs where
+    NCX-referenced Part dividers are stubs and the substantive Part body
+    lives in supplement XHTML files unreferenced by NCX but present in
+    spine order. Real-case repro was Brené Brown's *Dare to Lead* (Random
+    House 2018)."""
+    from book_llm_wiki.convert.epub import _section_mode_part_stubs_with_unref_body
+
+    epub_path = _build_part_stubs_with_unref_body_epub(tmp_path / "part_stubs.epub")
+    manifest_hrefs, deduped = _deduped_structure_for(epub_path)
+
+    assert _section_mode_part_stubs_with_unref_body(
+        epub_path, deduped, manifest_hrefs
+    )
+
+
+def test_section_mode_part_stubs_with_unref_body_not_falsely_detected(normal_epub: Path):
+    """A normal publisher EPUB where NCX entries target substantive body
+    files must NOT be flagged as part-stubs-with-unref-body."""
+    from book_llm_wiki.convert.epub import _section_mode_part_stubs_with_unref_body
+
+    manifest_hrefs, deduped = _deduped_structure_for(normal_epub)
+
+    assert not _section_mode_part_stubs_with_unref_body(
+        normal_epub, deduped, manifest_hrefs
+    )
+
+
+def test_part_stubs_pre_existing_detectors_do_not_fire_on_dare_to_lead_pattern(
+    tmp_path: Path,
+):
+    """The three pre-existing section-mode routing detectors must NOT
+    fire on the Dare-to-Lead-style fixture — confirming that the new
+    part-stubs detector is what's needed to route this pattern correctly.
+    Without this guard, a future change could make e.g.
+    ``_section_mode_routed_to_stubs`` fire on this fixture and the new
+    detector would become dead code."""
+    from book_llm_wiki.convert.epub import (
+        _section_mode_ncx_is_degenerate,
+        _section_mode_routed_to_stubs,
+    )
+
+    epub_path = _build_part_stubs_with_unref_body_epub(tmp_path / "part_stubs.epub")
+    manifest_hrefs, deduped = _deduped_structure_for(epub_path)
+
+    assert not _section_mode_routed_to_stubs(epub_path, deduped, manifest_hrefs)
+    assert not _section_mode_ncx_is_degenerate(epub_path, deduped, manifest_hrefs)
+
+
+def test_convert_part_stubs_epub_recovers_part_body_via_spine_extraction(
+    tmp_path: Path,
+):
+    """End-to-end: a Dare-to-Lead-style EPUB (NCX points at small
+    Part-divider stubs while Part body lives in supplement files
+    unreferenced by NCX) must route through
+    ``_convert_via_spine_body_extraction`` and recover all of the Part
+    supplement body content rather than emitting only the divider
+    stubs."""
+    epub_path = _build_part_stubs_with_unref_body_epub(tmp_path / "part_stubs.epub")
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+
+    text = out.read_text()
+
+    # Body content from the regularly-NCX-referenced chapter files must
+    # be present.
+    assert "BODY-OF-CH1" in text
+    assert "BODY-OF-CH2" in text
+    assert "BODY-OF-CH3" in text
+
+    # And the unreferenced Part supplement body content must also be
+    # present — the regression we're guarding against.
+    assert "BODY-OF-PART2-SUP" in text
+    assert "BODY-OF-PART3-SUP" in text
+    assert "BODY-OF-PART4-SUP" in text
+
+    assert result.conversion_quality == "high"
+    assert result.mode == "structured"

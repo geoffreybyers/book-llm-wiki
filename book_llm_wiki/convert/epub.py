@@ -862,6 +862,99 @@ def _section_mode_ncx_is_degenerate(
     return sum(unref_bytes) >= 5 * sum(ref_bytes)
 
 
+def _section_mode_part_stubs_with_unref_body(
+    epub_path: Path,
+    deduped_structure: list[dict],
+    manifest_hrefs: list[str],
+) -> bool:
+    """Detect EPUBs where NCX points at small Part-divider stubs while
+    substantive Part body lives in supplement XHTML files NOT referenced
+    by NCX but present in spine order between the divider and the next
+    NCX-referenced entry.
+
+    Failure pattern (real example: Brené Brown's *Dare to Lead*, Random
+    House 2018): each "Part" of the book has a small divider XHTML file
+    (~900B image-only page, e.g. ``p002_r1.xhtml``) referenced in the
+    NCX, plus one or more larger "supplement" XHTML files (``p002-sup1``,
+    ``p003-sup1``, ``bm-sup1``) NOT referenced in the NCX but present in
+    the spine between the Part divider and the next NCX-referenced
+    entry. Section-mode reads only the NCX-referenced stubs, dropping
+    all of the Part body — verified empirically as ~30% missing content.
+
+    The three pre-existing detectors miss this case:
+    - ``_section_mode_chapters_look_empty`` requires ≥50% of detected
+      chapters to be near-empty; here Part 1 sections are correctly
+      NCX-referenced so most chapters look fine.
+    - ``_section_mode_routed_to_stubs`` requires
+      ``sum(unref) ≥ 5 × sum(ref)``; here the ratio is reversed because
+      the Part 1 body is correctly NCX-referenced (430K ref vs. 215K
+      unref).
+    - ``_section_mode_ncx_is_degenerate`` requires the NCX to have ≤1
+      substantive navPoint; this EPUB's NCX has 18.
+
+    Detection: at least 3 NCX-referenced stubs (under
+    ``_SECTION_MODE_STUB_FILE_BYTE_THRESHOLD``), AND each such stub is
+    followed in spine order by at least one large unreferenced file
+    (over ``_SECTION_MODE_BODY_FILE_BYTE_THRESHOLD``) before the next
+    NCX-referenced entry. Three is the same gate the other section-mode
+    routing detectors use.
+    """
+    referenced_positions = {s["_position"] for s in deduped_structure}
+    if not referenced_positions:
+        return False
+
+    spine_hrefs = _spine_xhtml_hrefs(epub_path)
+    if not spine_hrefs:
+        return False
+
+    href_to_pos: dict[str, int] = {h: i + 1 for i, h in enumerate(manifest_hrefs)}
+
+    with zipfile.ZipFile(epub_path) as zf:
+        opf_path = _find_opf_path(zf)
+        opf_dir = str(Path(opf_path).parent) + "/" if "/" in opf_path else ""
+
+        def size_of(href: str) -> int:
+            try:
+                return zf.getinfo(f"{opf_dir}{href}").file_size
+            except KeyError:
+                return 0
+
+        stub_with_unref_body_count = 0
+        i = 0
+        while i < len(spine_hrefs):
+            href = spine_hrefs[i]
+            pos = href_to_pos.get(href)
+            if pos is None:
+                i += 1
+                continue
+            is_ref = pos in referenced_positions
+            sz = size_of(href)
+
+            if is_ref and sz < _SECTION_MODE_STUB_FILE_BYTE_THRESHOLD:
+                # Walk forward until the next NCX-referenced spine entry,
+                # collecting any large unreferenced files along the way.
+                found_large_unref = False
+                j = i + 1
+                while j < len(spine_hrefs):
+                    href_j = spine_hrefs[j]
+                    pos_j = href_to_pos.get(href_j)
+                    if pos_j is None:
+                        j += 1
+                        continue
+                    if pos_j in referenced_positions:
+                        break
+                    if size_of(href_j) > _SECTION_MODE_BODY_FILE_BYTE_THRESHOLD:
+                        found_large_unref = True
+                    j += 1
+                if found_large_unref:
+                    stub_with_unref_body_count += 1
+                i = j
+                continue
+            i += 1
+
+    return stub_with_unref_body_count >= 3
+
+
 def _section_mode_chapters_look_empty(parts: list[str]) -> bool:
     """Detect the Calibre-pre-split-spine pattern that breaks section-mode body lookup.
 
@@ -1403,6 +1496,22 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         # NCX entries to fire. Real example: Michael Port's *Book Yourself
         # Solid* (John Wiley & Sons 2010, Sigil-built).
         if _section_mode_ncx_is_degenerate(epub_path, deduped_structure, manifest_hrefs):
+            return _convert_via_spine_body_extraction(epub_path, out_path)
+
+        # Detect the Part-stubs-with-unref-body pattern: NCX-referenced
+        # Part dividers are stubs while substantive Part body lives in
+        # supplement XHTML files NOT referenced by NCX but present in
+        # spine order between divider and next NCX entry. Real example:
+        # Brené Brown's *Dare to Lead* (Random House 2018) — Parts 2/3/4
+        # body silently dropped because their content lives in
+        # ``p002-sup1`` / ``p003-sup1`` / ``bm-sup1`` files unreferenced
+        # by the NCX. The three prior detectors miss this case because
+        # Part 1 sections ARE correctly NCX-referenced — so chapters
+        # don't look empty in aggregate, the unref/ref ratio is reversed,
+        # and the NCX is far from degenerate.
+        if _section_mode_part_stubs_with_unref_body(
+            epub_path, deduped_structure, manifest_hrefs
+        ):
             return _convert_via_spine_body_extraction(epub_path, out_path)
 
         out_path.write_text("\n".join(parts))
