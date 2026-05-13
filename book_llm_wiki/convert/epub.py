@@ -256,6 +256,32 @@ _CHAPTER_PATTERNS = [
 # in the wild start at ~150 words. 50 leaves comfortable margin on both sides.
 _PART_BODY_MIN_WORDS = 50
 
+_BARE_INTEGER_LABEL = re.compile(r"^\s*\d+\.?\s*$")
+
+
+def _should_drop_part_for_lack_of_body(name: str, body: str) -> bool:
+    """Whether a Part section's body is too short to keep.
+
+    The standard 50-word floor (``_PART_BODY_MIN_WORDS``) catches divider-only
+    Part title pages like Awaken-the-Giant's "PART ONE / Unleash Your Power"
+    (4-5 words) without dropping substantive Part intros like Clear Thinking's
+    200-word epigraph + framing prose.
+
+    Bare-integer Part labels ("1", "2", "11") are a separate case: the label
+    itself carries no information — the actual chapter title and any intro
+    prose live in the body. Aaron Ross's *Predictable Revenue* (PebbleStorm
+    2011) ships 11 such dividers with only ~25-30 word bodies (chapter title
+    + tagline + opening sentence) that the standard floor would drop, losing
+    the book's real 11-chapter spine. For these, any non-empty body is worth
+    keeping; only a truly empty body still gets dropped.
+    """
+    body_words = body.split()
+    if not body_words:
+        return True
+    if _BARE_INTEGER_LABEL.match(name or ""):
+        return False
+    return len(body_words) < _PART_BODY_MIN_WORDS
+
 
 def classify_section(name: str) -> SectionClass:
     """Heuristic classifier for an EPUB section name."""
@@ -662,7 +688,7 @@ def convert_pages_epub_to_markdown(epub_path: Path, out_path: Path) -> Conversio
                     xhtml = ""
                 body = _extract_xhtml_text(xhtml)
                 if cls == SectionClass.PART:
-                    if len(body.split()) < _PART_BODY_MIN_WORDS:
+                    if _should_drop_part_for_lack_of_body(name, body):
                         continue  # divider-only Part page; drop entirely
                     heading = f"# Part — {name}"
                 elif cls == SectionClass.CHAPTER:
@@ -1200,7 +1226,7 @@ def _convert_via_merge_mode_with_section_labels(
             cls = SectionClass.CHAPTER
 
         if cls == SectionClass.PART:
-            if len(body.split()) < _PART_BODY_MIN_WORDS:
+            if _should_drop_part_for_lack_of_body(chapter_title, body):
                 continue
             heading = f"# Part — {chapter_title}"
         elif cls == SectionClass.CHAPTER:
@@ -1368,7 +1394,7 @@ def _convert_via_spine_body_extraction(
                     section_cls = "back"
 
             if section_cls == "part":
-                if wc < _PART_BODY_MIN_WORDS:
+                if _should_drop_part_for_lack_of_body(classify_target, body):
                     continue
                 heading = f"# Part — {classify_target}"
             elif section_cls == "chapter":
@@ -1522,7 +1548,7 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
                 section_dir, section["_position"], skip_offset=skip_offset
             )
             if cls == SectionClass.PART:
-                if len(body.split()) < _PART_BODY_MIN_WORDS:
+                if _should_drop_part_for_lack_of_body(name, body):
                     continue  # divider-only Part page; drop entirely
                 heading = f"# Part — {name}"
             elif cls == SectionClass.CHAPTER:

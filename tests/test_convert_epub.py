@@ -837,6 +837,66 @@ def test_convert_treats_bare_integer_ncx_titles_as_part_dividers(tmp_path: Path)
     assert result.chapter_count == 6
 
 
+def test_convert_keeps_bare_integer_part_intros_with_short_body(tmp_path: Path):
+    """A bare-integer Part label ("1") carries no information by itself —
+    the actual chapter title and any intro prose live in the body. A
+    short body (under the 50-word descriptive-Part floor) must still
+    be kept because dropping it loses the only structural marker the
+    publisher gave us for the start of a book chapter.
+
+    Real repro: Aaron Ross's *Predictable Revenue* (PebbleStorm 2011)
+    has 11 bare-integer chapter dividers with ~25-30 word bodies (just
+    the chapter title + tagline + opening sentence). The standard 50-
+    word floor drops them, losing the book's actual 11-chapter spine."""
+    sections = [
+        ("Cover", "Cover image."),
+        ("Foreword", "Foreword text " * 40),
+        # Bare-integer divider with a 22-word body (well under 50): kept.
+        ("1",
+         "Where the $100 Million Came From  I had never done "
+         "business-to-business sales in my life before joining Salesforce.com"),
+        ("Start Here", "BODY-OF-START-HERE " * 30),
+        ("The Hot Coals Sketch", "BODY-OF-HOT-COALS " * 30),
+        # Another bare-integer divider, even shorter body (10 words): kept.
+        ("2", "Cold Calling 2.0 Ramp Sales Fast Without Cold Calls"),
+        ("RIP Cold Calling", "BODY-OF-RIP " * 30),
+        # A *descriptive* Part with a 5-word body must STILL be dropped —
+        # this is the existing Awaken-the-Giant-style divider-only Part.
+        ("Part Three: Decoy Decoy", "PART THREE Decoy Decoy"),
+        ("Decoy Chapter", "BODY-OF-DECOY " * 30),
+    ]
+    epub_path = _build_epub_with_layout(
+        tmp_path / "short_bare_int_parts.epub",
+        title="Short Bare Integer Parts",
+        sections=sections,
+        spine_indices=list(range(len(sections))),
+        ncx_indices=list(range(len(sections))),
+    )
+
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+
+    # Both bare-integer dividers kept, body and all
+    assert "# Part — 1" in text
+    assert "Where the $100 Million Came From" in text
+    assert "# Part — 2" in text
+    assert "Cold Calling 2.0" in text
+
+    # Descriptive divider-only Part still dropped (regression guard for
+    # the Awaken-the-Giant / Blue-Ocean-Strategy behavior)
+    assert "# Part — Part Three" not in text
+    assert "PART THREE Decoy" not in text
+
+    # Chapters number contiguously across the whole book — 5 real chapters,
+    # no slot consumed by any Part divider (kept or dropped).
+    assert "# Chapter 1 — Start Here" in text
+    assert "# Chapter 2 — The Hot Coals Sketch" in text
+    assert "# Chapter 3 — RIP Cold Calling" in text
+    assert "# Chapter 4 — Decoy Chapter" in text
+    assert result.chapter_count == 4
+
+
 def test_convert_keeps_substantive_part_intros(tmp_path: Path):
     """Clear Thinking (Penguin RH 2023) packs each Part page with a 200-800
     word epigraph + framing prose before its sub-chapters. Those must be
