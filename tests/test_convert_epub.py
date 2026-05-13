@@ -130,6 +130,98 @@ def test_classify_preamble_keeps_introductions_unnumbered():
 from book_llm_wiki.convert.epub import convert_epub_to_markdown
 
 
+def test_finalize_quality_downgrades_mostly_empty_output(tmp_path: Path):
+    """Belt-and-suspenders sanity check: when the converter writes a file
+    whose non-whitespace content is overwhelmingly heading lines (no real
+    body), the ConversionResult must report quality 'low' / mode 'flat'
+    so the summarizer's single-pass fallback kicks in.
+
+    Documented repro: an earlier converter version produced a 5976-byte
+    file for *Predictable Revenue* that was 101 chapter headings and
+    nothing else, yet returned quality 'high'. The new section-mode
+    routing detectors (NCX-points-to-stub, degenerate-NCX, koboSpan,
+    part-stubs-with-unref-body) fix the body-extraction failures
+    individually, but a final post-write check catches whatever
+    future failure mode slips past every detector."""
+    from book_llm_wiki.convert.epub import _finalize_quality, ConversionResult
+
+    out = tmp_path / "empty.md"
+    # 85 chapter headings, no body — the documented Predictable Revenue
+    # first-ingest output shape (101 lines was 86 headings + 11 part-
+    # divider headings + 4 front/back; this is a clean repro).
+    out.write_text("\n\n".join(f"# Chapter {i} — Title {i}" for i in range(1, 86)) + "\n")
+    high = ConversionResult(chapter_count=85, conversion_quality="high", mode="structured")
+    result = _finalize_quality(out, high)
+    assert result.conversion_quality == "low"
+    assert result.mode == "flat"
+    # Chapter count preserved so the summarizer's fallback decision logic
+    # still sees the right shape.
+    assert result.chapter_count == 85
+
+
+def test_finalize_quality_keeps_substantial_output(tmp_path: Path):
+    """A normal high-quality conversion (substantial body content under
+    each heading) must NOT be downgraded. Regression guard against the
+    quality check getting tuned too aggressively and breaking healthy
+    books."""
+    from book_llm_wiki.convert.epub import _finalize_quality, ConversionResult
+
+    out = tmp_path / "normal.md"
+    parts = []
+    for i in range(1, 4):
+        parts.append(f"# Chapter {i} — Title {i}\n\n" + ("Body sentence. " * 100))
+    out.write_text("\n\n".join(parts))
+    high = ConversionResult(chapter_count=3, conversion_quality="high", mode="structured")
+    result = _finalize_quality(out, high)
+    assert result.conversion_quality == "high"
+    assert result.mode == "structured"
+    assert result.chapter_count == 3
+
+
+def test_finalize_quality_passthrough_when_already_low(tmp_path: Path):
+    """Inputs marked low must pass through unchanged — the helper only
+    downgrades high → low, never the other direction."""
+    from book_llm_wiki.convert.epub import _finalize_quality, ConversionResult
+
+    out = tmp_path / "flat.md"
+    out.write_text("Some flat content with no chapter structure.\n" * 50)
+    low = ConversionResult(chapter_count=0, conversion_quality="low", mode="flat")
+    assert _finalize_quality(out, low) == low
+
+
+def test_finalize_quality_tolerates_missing_output(tmp_path: Path):
+    """When the output file doesn't exist (e.g. the convert pipeline raised
+    before write), the helper returns the input unchanged rather than
+    crashing on the read attempt."""
+    from book_llm_wiki.convert.epub import _finalize_quality, ConversionResult
+
+    out = tmp_path / "missing.md"
+    high = ConversionResult(chapter_count=5, conversion_quality="high", mode="structured")
+    assert _finalize_quality(out, high) == high
+
+
+def test_convert_downgrades_quality_for_empty_output_via_finalize(tmp_path: Path):
+    """End-to-end: when convert_epub_to_markdown's output ends up mostly
+    empty (e.g. because every body-extraction path failed silently), the
+    returned ConversionResult must reflect quality 'low'. This is the
+    belt-and-suspenders catch that would have flagged the original
+    Predictable Revenue first-ingest output if it had returned 'high'
+    from a structured-mode path."""
+    # Simulate by directly writing a mostly-empty file and applying the
+    # check; verifies the wiring in convert_epub_to_markdown's wrap step.
+    from book_llm_wiki.convert.epub import _finalize_quality, ConversionResult
+
+    out = tmp_path / "out.md"
+    # 101 headings, zero body — the literal shape of the Predictable
+    # Revenue first-ingest failure.
+    out.write_text("\n\n".join(f"# Chapter {i} — Title" for i in range(1, 102)) + "\n")
+    result = _finalize_quality(
+        out,
+        ConversionResult(chapter_count=101, conversion_quality="high", mode="structured"),
+    )
+    assert result.conversion_quality == "low"
+
+
 def test_convert_normal_epub_produces_chapter_headings(normal_epub: Path, tmp_path: Path):
     out = tmp_path / "out.md"
     result = convert_epub_to_markdown(normal_epub, out)

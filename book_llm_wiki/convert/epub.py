@@ -450,6 +450,62 @@ class ConversionResult:
     mode: str  # 'structured' or 'flat'
 
 
+# Minimum share of the written output's non-whitespace characters that must
+# come from body content (everything other than heading lines) for the
+# result to remain quality 'high'. Below this floor, every route through
+# the converter must have failed silently — only headings made it to disk —
+# and the result is downgraded to 'low' / 'flat' so the summarizer's
+# single-pass fallback kicks in. 5% is comfortably below any plausible
+# real book (typical structured output is >99% body characters) and well
+# above any plausible heading-only file (which is 0%).
+_FINALIZE_BODY_RATIO_FLOOR = 0.05
+
+
+def _finalize_quality(out_path: Path, result: ConversionResult) -> ConversionResult:
+    """Belt-and-suspenders post-write quality check.
+
+    Read the converted markdown back and downgrade ``conversion_quality``
+    to ``'low'`` / ``mode`` to ``'flat'`` if the file is overwhelmingly
+    heading lines with no body content. This catches any failure mode
+    where every section-mode routing detector missed an empty-body
+    extraction failure — e.g. the original *Predictable Revenue*
+    (PebbleStorm 2011) first-ingest produced 101 chapter headings and
+    nothing else, yet returned quality 'high'.
+
+    Pass-through cases (no downgrade):
+      - Input quality is already 'low'.
+      - Output file doesn't exist (caller raised before writing).
+      - Output has substantial body content (>= 5% body-character share).
+
+    ``chapter_count`` is preserved so the summarizer's fallback decision
+    logic still sees the right structure.
+    """
+    if result.conversion_quality != "high":
+        return result
+    if not out_path.exists():
+        return result
+    try:
+        text = out_path.read_text()
+    except OSError:
+        return result
+    body_chars = 0
+    total_chars = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        total_chars += len(stripped)
+        if not stripped.startswith("#"):
+            body_chars += len(stripped)
+    if total_chars > 0 and body_chars / total_chars < _FINALIZE_BODY_RATIO_FLOOR:
+        return ConversionResult(
+            chapter_count=result.chapter_count,
+            conversion_quality="low",
+            mode="flat",
+        )
+    return result
+
+
 def _xhtml_manifest_hrefs(epub_path: Path) -> list[str]:
     """Return xhtml manifest hrefs in document (manifest) order.
 
@@ -1363,14 +1419,14 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
     # Apple Pages EPUBs need direct XHTML extraction — epub2md silently
     # produces near-empty markdown on them.
     if is_pages_origin(epub_path):
-        return convert_pages_epub_to_markdown(epub_path, out_path)
+        return _finalize_quality(out_path, convert_pages_epub_to_markdown(epub_path, out_path))
 
     # Kobo-flavored EPUBs (Simon & Schuster trade nonfiction commonly ships
     # this way) wrap text in inline `<span class="koboSpan">` elements that
     # epub2md silently drops. The Pages-fallback's regex-based tag-stripping
     # path handles them identically.
     if is_kobo_span_epub(epub_path):
-        return convert_pages_epub_to_markdown(epub_path, out_path)
+        return _finalize_quality(out_path, convert_pages_epub_to_markdown(epub_path, out_path))
 
     if is_pdf_origin(epub_path):
         with tempfile.TemporaryDirectory() as td:
@@ -1487,7 +1543,10 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         # (which concatenates all spine content under the EPUB's own H1s) and
         # use that output instead.
         if _section_mode_chapters_look_empty(parts):
-            return _convert_via_merge_mode_with_section_labels(epub_path, out_path)
+            return _finalize_quality(
+                out_path,
+                _convert_via_merge_mode_with_section_labels(epub_path, out_path),
+            )
 
         # Detect the NCX-points-to-stub pattern: NCX-referenced files are
         # small stubs (action exercises, summaries) while substantially larger
@@ -1498,7 +1557,9 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         # Re-run via spine-body extraction (which ignores the NCX and walks
         # the spine in reading order, skipping stubs).
         if _section_mode_routed_to_stubs(epub_path, deduped_structure, manifest_hrefs):
-            return _convert_via_spine_body_extraction(epub_path, out_path)
+            return _finalize_quality(
+                out_path, _convert_via_spine_body_extraction(epub_path, out_path)
+            )
 
         # Detect the degenerate-NCX pattern: NCX has 0 or 1 substantive
         # navPoints while the spine holds many substantive XHTML files.
@@ -1508,7 +1569,9 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         # NCX entries to fire. Real example: Michael Port's *Book Yourself
         # Solid* (John Wiley & Sons 2010, Sigil-built).
         if _section_mode_ncx_is_degenerate(epub_path, deduped_structure, manifest_hrefs):
-            return _convert_via_spine_body_extraction(epub_path, out_path)
+            return _finalize_quality(
+                out_path, _convert_via_spine_body_extraction(epub_path, out_path)
+            )
 
         # Detect the Part-stubs-with-unref-body pattern: NCX-referenced
         # Part dividers are stubs while substantive Part body lives in
@@ -1524,13 +1587,18 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         if _section_mode_part_stubs_with_unref_body(
             epub_path, deduped_structure, manifest_hrefs
         ):
-            return _convert_via_spine_body_extraction(epub_path, out_path)
+            return _finalize_quality(
+                out_path, _convert_via_spine_body_extraction(epub_path, out_path)
+            )
 
         out_path.write_text("\n".join(parts))
         _copy_images(section_dir)
 
-    return ConversionResult(
-        chapter_count=chapter_num,
-        conversion_quality="high",
-        mode="structured",
+    return _finalize_quality(
+        out_path,
+        ConversionResult(
+            chapter_count=chapter_num,
+            conversion_quality="high",
+            mode="structured",
+        ),
     )
