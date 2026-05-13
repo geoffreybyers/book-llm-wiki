@@ -1243,12 +1243,107 @@ def _convert_via_merge_mode_with_section_labels(
             heading = f"# Back Matter — {chapter_title}"
         parts.append(f"{heading}\n\n{body}\n")
 
+    parts = _maybe_promote_h2_to_chapters(parts)
+    chapter_num = sum(1 for p in parts if p.startswith("# Chapter "))
+
     out_path.write_text("\n".join(parts))
     return ConversionResult(
         chapter_count=chapter_num,
         conversion_quality="high",
         mode="structured",
     )
+
+
+def _maybe_promote_h2_to_chapters(parts: list[str]) -> list[str]:
+    """Promote H2 boundaries inside Part bodies to top-level Chapter headings.
+
+    Triggered when the merge-mode fallback emits Parts (or Parts mis-
+    classified as Chapters) at the H1 level with the real chapter
+    granularity living in H2 inside each Part body. Robert Cialdini's
+    *Pre-Suasion* (Random House 2016) is the documented repro: 3 Part-
+    as-H1 / 14 Chapter-as-H2 structure that without promotion collapses
+    to 3 fat Part-level chapters.
+
+    Two activation cases:
+
+    1. **Parts already classified as Part.** When ``parts`` contains
+       ``# Part — …`` entries but no ``# Chapter …`` entries, the H2
+       boundaries inside each Part body are the real chapters and get
+       promoted directly.
+
+    2. **Parts mis-classified as Chapter.** When the H1 titles don't
+       match the "Part N:" pattern (e.g. Pre-Suasion's all-caps
+       "PRE-SUASION: THE FRONTLOADING OF ATTENTION") they classify as
+       Chapter via the default branch. If there are ≤3 such H1 chapters
+       AND each carries ≥3 H2 boundaries (≥6 total H2s), the H1s are
+       relabeled as Parts and the H2s are promoted to Chapters.
+
+    For each (now-) Part, the body is split on ``^## `` boundaries. Text
+    before the first H2 stays under the Part heading as intro prose.
+    Each H2 becomes ``# Chapter N — <h2 title>``, numbered globally
+    across all Parts. Empty-title H2 boundaries (decorative section
+    breaks, epub2md artifacts) are skipped.
+
+    When neither activation case fires — chapters exist at H1 with
+    normal cardinality, or the input has no Parts — return ``parts``
+    unchanged. H2 headings inside a normally-classified Chapter are
+    sub-section markers, not chapter boundaries, and must NOT be
+    promoted (would shred each chapter into spurious mini-chapters).
+    """
+    has_part = any(p.startswith("# Part — ") for p in parts)
+    has_chapter = any(p.startswith("# Chapter ") for p in parts)
+
+    if has_part and not has_chapter:
+        pass
+    elif has_chapter and not has_part:
+        chapter_count = sum(1 for p in parts if p.startswith("# Chapter "))
+        h2_count = sum(
+            len(re.findall(r"(?m)^## ", p.partition("\n")[2])) for p in parts
+        )
+        if not (chapter_count <= 3 and h2_count >= 6 and h2_count >= chapter_count * 3):
+            return parts
+        relabeled: list[str] = []
+        for p in parts:
+            m = re.match(r"^# Chapter \d+ — (.*?)\n", p)
+            if m:
+                relabeled.append(f"# Part — {m.group(1)}\n{p[m.end():]}")
+            else:
+                relabeled.append(p)
+        parts = relabeled
+    else:
+        return parts
+
+    out: list[str] = []
+    chapter_num = 0
+    for part in parts:
+        if not part.startswith("# Part — "):
+            out.append(part)
+            continue
+        head_line, _, body = part.partition("\n")
+        body = body.strip()
+        sub_split = re.split(r"(?m)^(?=## )", body)
+        part_intro = sub_split[0].strip()
+        if part_intro:
+            out.append(f"{head_line}\n\n{part_intro}\n")
+        else:
+            out.append(f"{head_line}\n")
+        for sub in sub_split[1:]:
+            sub_head, _, sub_body = sub.partition("\n")
+            sub_title = sub_head[3:].strip() if sub_head.startswith("## ") else ""
+            if not sub_title:
+                continue
+            sub_cls = classify_section(sub_title)
+            if sub_cls == SectionClass.BACK:
+                out.append(f"# Back Matter — {sub_title}\n\n{sub_body.strip()}\n")
+            elif sub_cls == SectionClass.FRONT:
+                out.append(f"# Front Matter — {sub_title}\n\n{sub_body.strip()}\n")
+            elif sub_cls == SectionClass.PREAMBLE:
+                out.append(f"# Preamble — {sub_title}\n\n{sub_body.strip()}\n")
+            else:
+                chapter_num += 1
+                out.append(f"# Chapter {chapter_num} — {sub_title}\n\n{sub_body.strip()}\n")
+
+    return out
 
 
 def _convert_via_spine_body_extraction(

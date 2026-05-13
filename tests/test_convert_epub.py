@@ -1125,6 +1125,138 @@ def test_section_mode_chapters_look_empty_tolerates_one_short_chapter():
     assert _section_mode_chapters_look_empty(parts) is False
 
 
+def test_promote_h2_to_chapters_fires_when_only_parts_at_h1(tmp_path: Path):
+    """Pre-Suasion pattern: the merge-mode output has Parts as H1 and the
+    real chapters as H2 inside each Part body. The helper must walk H2
+    boundaries inside Part bodies and emit them as top-level Chapter
+    sections, numbered globally across all Parts.
+
+    Real repro: Robert Cialdini's *Pre-Suasion* (Random House 2016) has
+    3 Part-as-H1 / 14 Chapter-as-H2 structure. Without H2 promotion the
+    merge-mode fallback emits 3 fat Part-level chapters instead of 14
+    real ones, collapsing the book's actual chapter granularity."""
+    from book_llm_wiki.convert.epub import _maybe_promote_h2_to_chapters
+
+    parts = [
+        "# Preamble — Foreword\n\nForeword body.\n",
+        "# Part — Part 1: Frontloading\n\nPart 1 intro prose.\n\n## Chapter 1 Title\n\nCh 1 body text.\n\n## Chapter 2 Title\n\nCh 2 body text.\n",
+        "# Part — Part 2: Processes\n\n## Chapter 3 Title\n\nCh 3 body text.\n",
+    ]
+    result = _maybe_promote_h2_to_chapters(parts)
+    titles = [p.split("\n", 1)[0] for p in result]
+
+    # Parts kept (with intro prose where present)
+    assert "# Part — Part 1: Frontloading" in titles
+    assert "# Part — Part 2: Processes" in titles
+    # H2s promoted to global-numbered Chapter headings
+    assert "# Chapter 1 — Chapter 1 Title" in titles
+    assert "# Chapter 2 — Chapter 2 Title" in titles
+    assert "# Chapter 3 — Chapter 3 Title" in titles
+    # Per-chapter bodies kept under their new H1 headings
+    full = "\n".join(result)
+    ch1_idx = full.index("# Chapter 1 — Chapter 1 Title")
+    ch2_idx = full.index("# Chapter 2 — Chapter 2 Title")
+    assert "Ch 1 body text" in full[ch1_idx:ch2_idx]
+    # Part intro prose stays under the Part heading, not under the first chapter
+    part1_idx = full.index("# Part — Part 1: Frontloading")
+    assert "Part 1 intro prose" in full[part1_idx:ch1_idx]
+
+
+def test_promote_h2_fires_when_parts_misclassified_as_chapters(tmp_path: Path):
+    """Pre-Suasion's Part titles are all-caps with no "Part N:" prefix —
+    ``PRE-SUASION: THE FRONTLOADING OF ATTENTION`` rather than ``Part 1:
+    Pre-Suasion: The Frontloading of Attention`` — so the merge-mode
+    fallback's classify_section call routes them through the default
+    branch and labels them ``# Chapter N — …``. The helper must detect
+    this mis-classification (≤3 H1 chapters with ≥6 total H2 boundaries
+    averaging ≥3 H2s per H1) and relabel the H1s as Parts before
+    promoting the H2s to real Chapter headings."""
+    from book_llm_wiki.convert.epub import _maybe_promote_h2_to_chapters
+
+    parts = [
+        "# Chapter 1 — PRE-SUASION: THE FRONTLOADING OF ATTENTION\n\nPart 1 intro.\n\n## Pre-Suasion An Introduction\n\nbody 1.\n\n## Privileged Moments\n\nbody 2.\n\n## What's Focal Is Causal\n\nbody 3.\n",
+        "# Chapter 2 — PROCESSES: THE ROLE OF ASSOCIATION\n\n## The Primacy of Associations\n\nbody 4.\n\n## Persuasive Geographies\n\nbody 5.\n\n## The Mechanics of Pre-Suasion\n\nbody 6.\n",
+    ]
+    result = _maybe_promote_h2_to_chapters(parts)
+    titles = [p.split("\n", 1)[0] for p in result]
+
+    # The two mis-classified Chapter H1s are now Parts
+    assert "# Part — PRE-SUASION: THE FRONTLOADING OF ATTENTION" in titles
+    assert "# Part — PROCESSES: THE ROLE OF ASSOCIATION" in titles
+    # All six H2 boundaries become globally-numbered Chapter headings
+    assert "# Chapter 1 — Pre-Suasion An Introduction" in titles
+    assert "# Chapter 2 — Privileged Moments" in titles
+    assert "# Chapter 3 — What's Focal Is Causal" in titles
+    assert "# Chapter 4 — The Primacy of Associations" in titles
+    assert "# Chapter 5 — Persuasive Geographies" in titles
+    assert "# Chapter 6 — The Mechanics of Pre-Suasion" in titles
+
+
+def test_promote_h2_does_not_fire_on_normal_book_with_few_h2s(tmp_path: Path):
+    """A normal 3-chapter book with a couple of H2 sub-sections each
+    (typical short non-fiction) must NOT be relabeled. The H2-per-chapter
+    ratio gate (≥3) protects against this — a 3-chapter book with 2 H2
+    sub-sections per chapter has ratio 2, below the trigger."""
+    from book_llm_wiki.convert.epub import _maybe_promote_h2_to_chapters
+
+    parts = [
+        "# Chapter 1 — Origins\n\nbody.\n\n## sub 1.1\n\nx.\n\n## sub 1.2\n\nx.\n",
+        "# Chapter 2 — Growth\n\nbody.\n\n## sub 2.1\n\nx.\n\n## sub 2.2\n\nx.\n",
+        "# Chapter 3 — Reflection\n\nbody.\n\n## sub 3.1\n\nx.\n\n## sub 3.2\n\nx.\n",
+    ]
+    # H2 count = 6, chapter_count = 3, ratio = 2 (below the 3 threshold)
+    # The 6-H2 gate is met but the per-chapter ratio gate is not, so no fire.
+    assert _maybe_promote_h2_to_chapters(parts) == parts
+
+
+def test_promote_h2_does_not_fire_when_chapters_exist_at_h1(tmp_path: Path):
+    """Clear-Thinking-style EPUBs already have Part-as-H1 + Chapter-as-H1.
+    H2 headings inside chapter bodies are sub-section markers (epigraph
+    callouts, named anecdotes, etc.) and must NOT be promoted to chapters
+    — promotion would shred each chapter into many spurious mini-chapters.
+    Regression guard: the helper fires only when zero Chapter sections
+    exist at the H1 level."""
+    from book_llm_wiki.convert.epub import _maybe_promote_h2_to_chapters
+
+    parts = [
+        "# Part — Part 1: Stuff\n\nIntro.\n\n## Sub-section heading\n\nbody.\n",
+        "# Chapter 1 — Foo\n\n## Mid-chapter callout\n\nMore body.\n",
+        "# Chapter 2 — Bar\n\nbody.\n",
+    ]
+    result = _maybe_promote_h2_to_chapters(parts)
+    # Unchanged — no H2 promotion when H1 Chapters already exist
+    assert result == parts
+
+
+def test_promote_h2_does_not_fire_when_no_parts(tmp_path: Path):
+    """A normal Chapter-as-H1 EPUB without any Part dividers has no work
+    for this helper to do. Pass through unchanged."""
+    from book_llm_wiki.convert.epub import _maybe_promote_h2_to_chapters
+
+    parts = [
+        "# Front Matter — Cover\n\nCover image.\n",
+        "# Chapter 1 — Foo\n\n## Sub-section\n\nbody.\n",
+        "# Chapter 2 — Bar\n\nbody.\n",
+    ]
+    assert _maybe_promote_h2_to_chapters(parts) == parts
+
+
+def test_promote_h2_skips_empty_h2_titles(tmp_path: Path):
+    """H2 boundaries with empty title text (decorative section breaks,
+    epub2md artifacts) must not be promoted to Chapter headings."""
+    from book_llm_wiki.convert.epub import _maybe_promote_h2_to_chapters
+
+    parts = [
+        "# Part — Part 1\n\nIntro.\n\n## \n\nempty-title body\n\n## Real Chapter\n\nbody.\n",
+    ]
+    result = _maybe_promote_h2_to_chapters(parts)
+    titles = [p.split("\n", 1)[0] for p in result]
+    # The "## " with empty title is skipped; only the real one becomes Ch 1
+    assert "# Chapter 1 — Real Chapter" in titles
+    assert "# Chapter 1 — " not in titles  # not an empty-title chapter
+    assert sum(1 for t in titles if t.startswith("# Chapter ")) == 1
+
+
 def _build_calibre_split_spine_epub(out_path: Path) -> Path:
     """Build an EPUB that mimics the Calibre-pre-split-spine pattern.
 
