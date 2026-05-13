@@ -75,6 +75,39 @@ def test_classify_parts_are_their_own_class():
     assert classify_section("part 5") == SectionClass.PART
 
 
+def test_classify_bare_integer_title_is_part():
+    """NCX entries titled only with a digit (``"1"``, ``"2"``, …, ``"11"``)
+    are chapter-divider intro pages, not real chapters. Aaron Ross's
+    *Predictable Revenue* (PebbleStorm 2011) is the documented repro:
+    the 11 ``CHAPTER N: <Title>`` NCX entries are fragment anchors into
+    the Contents page (deduped away by manifest-position dedupe), while
+    each book chapter's intro page surfaces in the NCX with just its
+    number as the label. Without this classification they'd be numbered
+    as Chapters interspersed among the 80+ sub-section chapters, losing
+    the book's actual 11-chapter structure."""
+    assert classify_section("1") == SectionClass.PART
+    assert classify_section("2") == SectionClass.PART
+    assert classify_section("11") == SectionClass.PART
+    # Trailing period is common in some publisher TOC styling
+    assert classify_section("1.") == SectionClass.PART
+    # Whitespace tolerance
+    assert classify_section(" 3 ") == SectionClass.PART
+
+
+def test_classify_bare_integer_does_not_break_existing_chapter_patterns():
+    """Existing chapter-title forms — ``Chapter 1``, ``1 The Surprising…``,
+    Roman-numeraled chapters, etc. — must continue classifying as CHAPTER,
+    not be swallowed by the new bare-integer Part detector. Guard against
+    the regression of the bare-integer rule eating substantive chapter
+    titles that happen to start with digits."""
+    assert classify_section("Chapter 1") == SectionClass.CHAPTER
+    assert classify_section("Chapter 11: Sales Machine Fundamentals") == SectionClass.CHAPTER
+    assert classify_section("1 The Surprising Power of Atomic Habits") == SectionClass.CHAPTER
+    assert classify_section("11 The Goldilocks Rule") == SectionClass.CHAPTER
+    # Real labels with trailing colons should remain Chapter
+    assert classify_section("1: The Surprising Power") == SectionClass.CHAPTER
+
+
 def test_classify_preamble_keeps_introductions_unnumbered():
     """Sections that are content-bearing but pre-Chapter-1 belong to PREAMBLE,
     so they can be summarized without consuming chapter numbers."""
@@ -644,6 +677,72 @@ def test_convert_drops_divider_only_part_pages(tmp_path: Path):
     assert "# Chapter 2 — Chapter 2: Decisions" in text
     assert "# Chapter 3 — Chapter 3: Master System" in text
     assert result.chapter_count == 3
+
+
+def test_convert_treats_bare_integer_ncx_titles_as_part_dividers(tmp_path: Path):
+    """End-to-end: an EPUB whose NCX surfaces book-chapter intro pages
+    with just an integer label ("1", "2", "3") interspersed with
+    descriptively-titled sub-section entries must produce ``# Part — N``
+    headings for the dividers and consecutively-numbered Chapter headings
+    for the sub-sections.
+
+    Real repro: Aaron Ross's *Predictable Revenue* (PebbleStorm 2011)
+    has 11 ``CHAPTER N: <Title>`` NCX entries pointing at fragment
+    anchors inside the Contents page (deduped away by manifest-position
+    dedupe), plus 80+ sub-section entries — among which the 11
+    chapter-intro pages surface with labels ``"1"``, ``"2"``, …,
+    ``"11"``. Without bare-integer Part classification the dividers
+    consume chapter numbers and the book's 11-chapter structure is
+    lost in the output.
+    """
+    # Three book chapters' worth of structure: each has a bare-integer
+    # divider with a short intro, followed by two named sub-sections.
+    sections = [
+        ("Cover", "Cover image."),
+        ("Foreword", "Foreword text " * 40),
+        # Book Chapter 1: divider + 2 sub-sections
+        ("1", "Where the $100 Million Came From " + ("intro prose " * 30)),
+        ("Start Here", "BODY-OF-START-HERE " * 30),
+        ("The Hot Coals Sketch", "BODY-OF-HOT-COALS " * 30),
+        # Book Chapter 2: divider + 2 sub-sections
+        ("2", "Cold Calling 2.0 " + ("intro prose " * 30)),
+        ("RIP Cold Calling", "BODY-OF-RIP " * 30),
+        ("Cold Calling 1.0 vs 2.0", "BODY-OF-VS " * 30),
+        # Book Chapter 3: divider + 2 sub-sections
+        ("3", "Executing Cold Calling 2.0 " + ("intro prose " * 30)),
+        ("Getting Started", "BODY-OF-GETTING-STARTED " * 30),
+        ("The Ideal Customer Profile", "BODY-OF-ICP " * 30),
+    ]
+    epub_path = _build_epub_with_layout(
+        tmp_path / "bare_int_dividers.epub",
+        title="Bare Integer Dividers",
+        sections=sections,
+        spine_indices=list(range(len(sections))),
+        ncx_indices=list(range(len(sections))),
+    )
+
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+
+    # The three bare-integer dividers render as Parts, not Chapters
+    assert "# Part — 1" in text
+    assert "# Part — 2" in text
+    assert "# Part — 3" in text
+    # And are never re-classified as Chapter headings
+    assert "# Chapter 1 — 1" not in text
+    assert "# Chapter 2 — 2" not in text
+    assert "# Chapter 3 — 3" not in text
+
+    # Sub-sections number contiguously across the whole book — six total,
+    # no slot consumed by any divider.
+    assert "# Chapter 1 — Start Here" in text
+    assert "# Chapter 2 — The Hot Coals Sketch" in text
+    assert "# Chapter 3 — RIP Cold Calling" in text
+    assert "# Chapter 4 — Cold Calling 1.0 vs 2.0" in text
+    assert "# Chapter 5 — Getting Started" in text
+    assert "# Chapter 6 — The Ideal Customer Profile" in text
+    assert result.chapter_count == 6
 
 
 def test_convert_keeps_substantive_part_intros(tmp_path: Path):

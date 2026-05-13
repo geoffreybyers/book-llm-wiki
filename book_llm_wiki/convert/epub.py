@@ -223,8 +223,20 @@ _BACK_PATTERNS = [
 # chapter; body emitted only when substantive (Awaken the Giant Within and
 # Blue Ocean Strategy use Parts as 8-12 word title pages; Clear Thinking
 # packs each Part with a 200-800 word epigraph + setup before its chapters).
+#
+# The bare-integer pattern catches a specific publisher failure mode where
+# an EPUB's NCX uses fragment anchors into a Contents page for the real
+# CHAPTER N entries (deduped away by manifest-position dedupe) while
+# surfacing each book chapter's intro page in the NCX with just its number
+# as the label. Aaron Ross's *Predictable Revenue* (PebbleStorm 2011) is
+# the documented repro. The pattern is intentionally narrow — bare digits
+# with an optional trailing period and nothing else — so substantive
+# chapter titles that happen to start with digits ("1 The Surprising
+# Power…", "11 The Goldilocks Rule") still classify as CHAPTER via the
+# digit+whitespace+non-whitespace pattern in _CHAPTER_PATTERNS.
 _PART_PATTERNS = [
     re.compile(r"^part\s+(\w+)\b", re.IGNORECASE),  # "Part 1", "Part 1:", "Part 1.", "Part One", "Part II"
+    re.compile(r"^\d+\.?$"),                         # bare-integer chapter-divider label ("1", "2", "11", "1.")
 ]
 
 
