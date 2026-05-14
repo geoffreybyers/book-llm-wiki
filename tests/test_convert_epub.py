@@ -2204,3 +2204,162 @@ def test_convert_part_stubs_epub_recovers_part_body_via_spine_extraction(
 
     assert result.conversion_quality == "high"
     assert result.mode == "structured"
+
+
+def _build_calibre_generic_title_epub(out_path: Path) -> Path:
+    """Build an EPUB where every XHTML file has the same generic
+    ``<title>Converted Ebook</title>`` and the real chapter heading sits
+    inside the body as ``<h2>``.
+
+    Mirrors the pattern of Calibre-generated EPUBs from PDFs / print scans
+    where Calibre uses a fixed "Converted Ebook" placeholder for every
+    file's ``<title>`` element and never inserts an ``<h1>``. Real example:
+    Michael Masterson, *Ready, Fire, Aim* (Wiley 2008, Agora-distributed,
+    rebuilt through Calibre).
+
+    The NCX is degenerate (single navPoint pointing at the cover stub),
+    forcing the converter through ``_convert_via_spine_body_extraction``.
+    The body files have substantive prose (>500 bytes) so the byte-size
+    stub-filter does not drop them.
+    """
+    import zipfile
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, MIMETYPE,
+    )
+
+    # Every XHTML uses the SAME generic <title> ("Converted Ebook") and
+    # carries its real chapter title only as <h2> inside the body.
+    GENERIC_TITLE_HTML = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Converted Ebook</title></head>
+<body>
+<h2>{h2_title}</h2>
+<p>{body}</p>
+</body>
+</html>
+"""
+
+    # Cover stub stays small (<3 KB) so the spine-body extractor drops it
+    # at the byte-threshold; the real preamble + chapter files all have
+    # >500 chars of body prose so they survive.
+    cover_html = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Converted Ebook</title></head>
+<body><p>Cover</p></body>
+</html>
+"""
+
+    # Each body file must exceed the 8000-byte SECTION_MODE_BODY_FILE_BYTE_THRESHOLD
+    # for _section_mode_ncx_is_degenerate to fire (it requires ≥3 unreferenced
+    # XHTML files above that threshold).
+    sections = [
+        ("cover.xhtml",   cover_html,                                                                                "Cover"),
+        ("section-2.xhtml", GENERIC_TITLE_HTML.format(h2_title="WHAT TO EXPECT FROM THIS BOOK",   body="WHAT-TO-EXPECT-BODY " * 500),  "WHAT TO EXPECT FROM THIS BOOK"),
+        ("section-3.xhtml", GENERIC_TITLE_HTML.format(h2_title="CHAPTER ONE: Getting To The Next Level", body="CHAPTER-ONE-BODY " * 500), "Ch One"),
+        ("section-4.xhtml", GENERIC_TITLE_HTML.format(h2_title="CHAPTER TWO: Why Employee Size Matters", body="CHAPTER-TWO-BODY " * 500), "Ch Two"),
+        ("section-5.xhtml", GENERIC_TITLE_HTML.format(h2_title="CHAPTER THREE: Becoming A Five-Star Business", body="CHAPTER-THREE-BODY " * 500), "Ch Three"),
+        ("section-6.xhtml", GENERIC_TITLE_HTML.format(h2_title="CHAPTER FOUR: The Supremacy Of Selling", body="CHAPTER-FOUR-BODY " * 500), "Ch Four"),
+    ]
+
+    manifest_items = []
+    spine_items = []
+    html_files = {}
+    for i, (href, html, _label) in enumerate(sections, start=1):
+        item_id = f"s{i}"
+        manifest_items.append(
+            f'    <item id="{item_id}" href="{href}" media-type="application/xhtml+xml"/>'
+        )
+        spine_items.append(f'    <itemref idref="{item_id}"/>')
+        html_files[href] = html
+
+    # NCX is degenerate: a single navPoint pointing at the cover stub. This
+    # forces _section_mode_ncx_is_degenerate to fire and route through
+    # _convert_via_spine_body_extraction.
+    nav_points = [NAV_POINT_TEMPLATE.format(id="nav1", order=1, label="Cover", src="cover.xhtml")]
+
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="Calibre Generic Title Book",
+        author="Test Author",
+        year="2024",
+        title_slug="calibre-generic-title-book",
+        manifest_items="\n".join(manifest_items),
+        spine_items="\n".join(spine_items),
+        extra_metadata="",
+    )
+    ncx_xml = NCX_TEMPLATE.format(
+        title="Calibre Generic Title Book", nav_points="\n".join(nav_points)
+    )
+
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+    return out_path
+
+
+def test_convert_calibre_generic_title_uses_h2_for_chapter_classification(
+    tmp_path: Path,
+):
+    """Regression: EPUBs where every XHTML file has the same generic
+    <title>Converted Ebook</title> and the real chapter heading lives
+    only as <h2> inside the body must classify by the H2 heading, not by
+    the generic placeholder.
+
+    Real example: Michael Masterson, *Ready, Fire, Aim* (Wiley 2008,
+    Agora-distributed, Calibre-rebuilt) — produces 100+ chapters all
+    titled "Chapter N — Converted Ebook" without the fix.
+    """
+    epub_path = _build_calibre_generic_title_epub(
+        tmp_path / "calibre_generic.epub"
+    )
+    out = tmp_path / "out.md"
+
+    result = convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+
+    # The generic placeholder must NOT appear inside any ``# Chapter``,
+    # ``# Preamble``, ``# Part``, ``# Front Matter`` or ``# Back Matter``
+    # heading. (It may appear in body prose if real chapter text mentioned
+    # it, but the heading classification must use the H2 instead.)
+    import re as _re
+    heading_lines = [
+        ln for ln in text.splitlines()
+        if _re.match(r"^# (Chapter |Preamble |Part |Front Matter|Back Matter)", ln)
+    ]
+    for hl in heading_lines:
+        assert "Converted Ebook" not in hl, (
+            f"Generic placeholder leaked into heading: {hl!r}"
+        )
+
+    # Real chapter titles (drawn from the H2 headings) must appear in
+    # chapter headings with proper Chapter classification. The preamble
+    # ("WHAT TO EXPECT FROM THIS BOOK") classifies as CHAPTER under
+    # classify_section's default heuristics — that's tangential to this
+    # regression. What matters is that the H2 title is used, not the
+    # generic placeholder.
+    assert "WHAT TO EXPECT FROM THIS BOOK" in text
+    assert "# Chapter " in text  # at least one Chapter heading emitted
+    # Each H2 chapter title appears in some heading line:
+    chapter_h2_titles = [
+        "CHAPTER ONE: Getting To The Next Level",
+        "CHAPTER TWO: Why Employee Size Matters",
+        "CHAPTER THREE: Becoming A Five-Star Business",
+        "CHAPTER FOUR: The Supremacy Of Selling",
+    ]
+    for title in chapter_h2_titles:
+        matching_headings = [hl for hl in heading_lines if title in hl]
+        assert matching_headings, f"H2 title {title!r} missing from any heading"
+
+    # Body content must be present (substantive body bytes survived).
+    assert "WHAT-TO-EXPECT-BODY" in text
+    assert "CHAPTER-ONE-BODY" in text
+    assert "CHAPTER-TWO-BODY" in text
+    assert "CHAPTER-THREE-BODY" in text
+    assert "CHAPTER-FOUR-BODY" in text
+
+    assert result.conversion_quality == "high"
+    assert result.mode == "structured"

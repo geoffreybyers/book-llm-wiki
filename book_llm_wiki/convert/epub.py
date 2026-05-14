@@ -732,6 +732,26 @@ _SECTION_MODE_EMPTY_CHAPTER_WORD_FLOOR = 25
 _SECTION_MODE_STUB_FILE_BYTE_THRESHOLD = 3000
 _SECTION_MODE_BODY_FILE_BYTE_THRESHOLD = 8000
 
+# Generic placeholder titles some Calibre-built EPUBs put in every XHTML
+# file's ``<title>`` and as a leading text node. When the spine-body
+# extractor's title-detection fallback sees one of these as the first
+# non-empty line, it skips past it to look for the real chapter heading
+# inside the body (typically the next ``## ``-style heading). Real example:
+# Michael Masterson, *Ready, Fire, Aim* (Wiley 2008, Agora-distributed,
+# Calibre-rebuilt) — every XHTML file has ``<title>Converted Ebook</title>``
+# while the real chapter title appears only as ``<h2>``.
+_GENERIC_PLACEHOLDER_TITLES = frozenset({
+    "converted ebook",
+    "untitled",
+    "untitled document",
+})
+
+
+def _is_generic_placeholder_title(text: str) -> bool:
+    """True when the line is a known generic placeholder rather than a real
+    chapter title."""
+    return text.strip().lower() in _GENERIC_PLACEHOLDER_TITLES
+
 # Publisher CSS classes that mark chapter / part / preamble / back-matter
 # titles inside <p> tags. Wiley uses chaptertitle / parttitle / prefacetitle /
 # mattertitle / forewordtitle / appendixtitle; other Adobe-InDesign-built
@@ -1473,7 +1493,48 @@ def _convert_via_spine_body_extraction(
                 # Existing fallback path: derive a title from the extracted
                 # text and classify via the legacy heuristics.
                 lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
-                title = lines[0] if lines else Path(href).stem
+                # Skip past known generic placeholders (e.g. "Converted Ebook"
+                # injected into every XHTML file by some Calibre-built EPUBs)
+                # and prefer the next substantive line, which often carries
+                # the real chapter heading as a markdown ``## `` heading
+                # (``<h2>`` in the source XHTML). Strip the heading marker
+                # and any bold-emphasis wrappers from that line. Also drop
+                # the matching leading lines from the body so the title
+                # doesn't appear duplicated under its own heading.
+                title = ""
+                title_source_line: str | None = None
+                lines_to_strip_from_body: list[str] = []
+                for line in lines:
+                    candidate = re.sub(r"^#+\s*", "", line).strip()
+                    candidate = candidate.strip("*_ ").strip()
+                    if not candidate:
+                        continue
+                    if _is_generic_placeholder_title(candidate):
+                        lines_to_strip_from_body.append(line)
+                        continue
+                    title = candidate
+                    title_source_line = line
+                    lines_to_strip_from_body.append(line)
+                    break
+                if not title:
+                    title = Path(href).stem
+
+                # Rewrite body to strip the generic-placeholder + duplicated-
+                # heading leading lines we consumed for the title.
+                if title_source_line is not None and lines_to_strip_from_body:
+                    body_lines = body.splitlines()
+                    drop_set = set(lines_to_strip_from_body)
+                    new_body_lines: list[str] = []
+                    stripping = True
+                    for line in body_lines:
+                        if stripping:
+                            stripped = line.strip()
+                            if not stripped or stripped in drop_set:
+                                continue
+                            stripping = False
+                        new_body_lines.append(line)
+                    body = "\n".join(new_body_lines)
+
                 stripped_title = re.sub(r"^\d+\s+", "", title).strip()
                 classify_target = stripped_title or title
                 cls_enum = classify_section(classify_target)
