@@ -2363,3 +2363,151 @@ def test_convert_calibre_generic_title_uses_h2_for_chapter_classification(
 
     assert result.conversion_quality == "high"
     assert result.mode == "structured"
+
+
+def _build_calibre_generic_title_multi_file_chapter_epub(out_path: Path) -> Path:
+    """Build an EPUB where each real chapter is split across several XHTML
+    files: the first file in the chapter has an <h2> chapter heading, but
+    subsequent files in the same chapter have only continuation prose with
+    no H2 heading at all.
+
+    Mirrors the print-page-per-XHTML pattern of Calibre-from-PDF EPUBs (real
+    example: Michael Masterson, *Ready, Fire, Aim*, Wiley 2008,
+    Agora-distributed) where the original book's 25 chapters explode into
+    100+ XHTML files, with each chapter spanning 4-10 consecutive files.
+    The first file has the chapter heading; subsequent files contain
+    mid-prose continuation.
+
+    The spine-body extractor must consolidate continuation files into the
+    preceding chapter rather than emitting one chapter heading per file.
+    """
+    import zipfile
+    from tests.conftest import (
+        CONTAINER_XML, CONTENT_OPF_TEMPLATE, NCX_TEMPLATE,
+        NAV_POINT_TEMPLATE, MIMETYPE,
+    )
+
+    HEADED_HTML = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Converted Ebook</title></head>
+<body>
+<h2>{h2_title}</h2>
+<p>{body}</p>
+</body>
+</html>
+"""
+    CONTINUATION_HTML = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Converted Ebook</title></head>
+<body>
+<p>{body}</p>
+</body>
+</html>
+"""
+    cover_html = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Converted Ebook</title></head>
+<body><p>Cover</p></body>
+</html>
+"""
+
+    # Each chapter is split: a "headed" file with the <h2> + two "continuation"
+    # files with no heading. Each file > 8KB so the degenerate-NCX detector
+    # fires.
+    sections = [
+        ("cover.xhtml",     cover_html),
+        # CHAPTER ONE — headed + 2 continuations. Each file > 8KB so the
+        # _section_mode_ncx_is_degenerate detector fires.
+        ("section-2.xhtml", HEADED_HTML.format(h2_title="CHAPTER ONE: Getting To The Next Level", body="CHONE-A " * 1200)),
+        ("section-3.xhtml", CONTINUATION_HTML.format(body="CHONE-CONT-B " * 1200)),
+        ("section-4.xhtml", CONTINUATION_HTML.format(body="CHONE-CONT-C " * 1200)),
+        # CHAPTER TWO — headed + 1 continuation
+        ("section-5.xhtml", HEADED_HTML.format(h2_title="CHAPTER TWO: The Second", body="CHTWO-A " * 1200)),
+        ("section-6.xhtml", CONTINUATION_HTML.format(body="CHTWO-CONT-B " * 1200)),
+        # CHAPTER THREE — headed only
+        ("section-7.xhtml", HEADED_HTML.format(h2_title="CHAPTER THREE: The Third", body="CHTHREE-A " * 1200)),
+    ]
+
+    manifest_items = []
+    spine_items = []
+    html_files = {}
+    for i, (href, html) in enumerate(sections, start=1):
+        item_id = f"s{i}"
+        manifest_items.append(
+            f'    <item id="{item_id}" href="{href}" media-type="application/xhtml+xml"/>'
+        )
+        spine_items.append(f'    <itemref idref="{item_id}"/>')
+        html_files[href] = html
+
+    nav_points = [NAV_POINT_TEMPLATE.format(id="nav1", order=1, label="Cover", src="cover.xhtml")]
+
+    content_opf = CONTENT_OPF_TEMPLATE.format(
+        title="Calibre Multi-File Chapter Book",
+        author="Test Author",
+        year="2024",
+        title_slug="calibre-multi-file-chapter-book",
+        manifest_items="\n".join(manifest_items),
+        spine_items="\n".join(spine_items),
+        extra_metadata="",
+    )
+    ncx_xml = NCX_TEMPLATE.format(
+        title="Calibre Multi-File Chapter Book", nav_points="\n".join(nav_points)
+    )
+
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", MIMETYPE, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/toc.ncx", ncx_xml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+    return out_path
+
+
+def test_convert_calibre_multi_file_chapter_consolidates_continuations(
+    tmp_path: Path,
+):
+    """Regression: when each chapter is split across multiple XHTML files
+    (the first carries the H2 heading; subsequent files have continuation
+    prose only), the spine-body extractor must consolidate continuation
+    files into the preceding chapter rather than emitting one chapter
+    heading per file.
+
+    Real example: Michael Masterson, *Ready, Fire, Aim* (Wiley 2008,
+    Agora-distributed, Calibre-rebuilt) — produces 100+ chapters (one per
+    XHTML print-page) without consolidation, when the actual book has 25.
+    """
+    epub_path = _build_calibre_generic_title_multi_file_chapter_epub(
+        tmp_path / "calibre_multi.epub"
+    )
+    out = tmp_path / "out.md"
+
+    result = convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+
+    # Exactly 3 chapter headings — one per real chapter, not one per file.
+    chapter_headings = [
+        ln for ln in text.splitlines() if ln.startswith("# Chapter ")
+    ]
+    assert len(chapter_headings) == 3, (
+        f"Expected 3 chapter headings, got {len(chapter_headings)}: {chapter_headings!r}"
+    )
+    assert "# Chapter 1 — CHAPTER ONE: Getting To The Next Level" in text
+    assert "# Chapter 2 — CHAPTER TWO: The Second" in text
+    assert "# Chapter 3 — CHAPTER THREE: The Third" in text
+
+    # All body content (including continuations) is present, attached to the
+    # right chapter.
+    ch1 = text.index("# Chapter 1 —")
+    ch2 = text.index("# Chapter 2 —")
+    ch3 = text.index("# Chapter 3 —")
+    assert "CHONE-A" in text[ch1:ch2]
+    assert "CHONE-CONT-B" in text[ch1:ch2]
+    assert "CHONE-CONT-C" in text[ch1:ch2]
+    assert "CHTWO-A" in text[ch2:ch3]
+    assert "CHTWO-CONT-B" in text[ch2:ch3]
+    assert "CHTHREE-A" in text[ch3:]
+
+    assert result.chapter_count == 3
+    assert result.conversion_quality == "high"
+    assert result.mode == "structured"

@@ -1503,27 +1503,104 @@ def _convert_via_spine_body_extraction(
                 # doesn't appear duplicated under its own heading.
                 title = ""
                 title_source_line: str | None = None
-                lines_to_strip_from_body: list[str] = []
+                title_from_heading = False
+                placeholder_lines_to_strip: list[str] = []
+
+                # First-pass: scan leading lines for a markdown-heading-style
+                # line (``# ``/``## ``/``### ``...). This is the strongest
+                # signal that the file starts a real chapter. Track any
+                # placeholder lines we pass on the way so we can strip them
+                # from the body later. Stop scanning once we hit a non-empty,
+                # non-placeholder, non-heading line — at that point a heading
+                # further down the body is just an inline section header,
+                # not the chapter title.
                 for line in lines:
                     candidate = re.sub(r"^#+\s*", "", line).strip()
                     candidate = candidate.strip("*_ ").strip()
                     if not candidate:
                         continue
                     if _is_generic_placeholder_title(candidate):
-                        lines_to_strip_from_body.append(line)
+                        placeholder_lines_to_strip.append(line)
                         continue
-                    title = candidate
-                    title_source_line = line
-                    lines_to_strip_from_body.append(line)
+                    if line.lstrip().startswith("#"):
+                        title = candidate
+                        title_source_line = line
+                        title_from_heading = True
+                        break
+                    # Non-heading non-placeholder text — could be a plain
+                    # ``<title>``-derived title line followed by an H1
+                    # heading (Tracy pattern) or genuine continuation prose
+                    # with no heading at all (Masterson pattern). Inspect
+                    # the next few lines: if any of them is a heading whose
+                    # content matches this line, treat the whole file as
+                    # starting a real chapter and prefer the heading line as
+                    # the title source.
+                    follow_window = lines[lines.index(line) + 1 : lines.index(line) + 6]
+                    heading_match = None
+                    for follow_line in follow_window:
+                        if not follow_line.lstrip().startswith("#"):
+                            continue
+                        follow_candidate = re.sub(
+                            r"^#+\s*", "", follow_line
+                        ).strip("*_ ").strip()
+                        if follow_candidate == candidate:
+                            heading_match = follow_line
+                            break
+                    if heading_match is not None:
+                        title = candidate
+                        title_source_line = heading_match
+                        title_from_heading = True
+                        # Also strip the duplicate plain-text title line.
+                        placeholder_lines_to_strip.append(line)
+                    else:
+                        title = candidate
+                        title_source_line = line
+                        title_from_heading = False
                     break
+
+                # Multi-file chapter consolidation: when this XHTML file
+                # has no markdown-heading-style line at all (just generic
+                # placeholder + mid-prose body), it's a continuation page
+                # of the preceding chapter rather than a new chapter start.
+                # Real example: Michael Masterson, *Ready, Fire, Aim* (Wiley
+                # 2008, Agora-distributed, Calibre-rebuilt) — each chapter is
+                # split across 4-10 XHTML print-pages, only the first of
+                # which carries the ``<h2>`` chapter heading. Append the
+                # body to the preceding chapter rather than emitting a new
+                # chapter heading. In this branch we strip ONLY the leading
+                # placeholder lines from the body — the title-source line
+                # IS body content (the chapter's mid-prose) and must be
+                # preserved.
+                if not title_from_heading and parts and parts[-1].startswith(
+                    "# Chapter "
+                ):
+                    body_lines = body.splitlines()
+                    drop_set = set(placeholder_lines_to_strip)
+                    new_body_lines: list[str] = []
+                    stripping = True
+                    for line in body_lines:
+                        if stripping:
+                            stripped = line.strip()
+                            if not stripped or stripped in drop_set:
+                                continue
+                            stripping = False
+                        new_body_lines.append(line)
+                    continuation_body = "\n".join(new_body_lines).strip()
+                    if continuation_body:
+                        parts[-1] = (
+                            parts[-1].rstrip() + "\n\n" + continuation_body + "\n"
+                        )
+                    continue
+
                 if not title:
                     title = Path(href).stem
 
-                # Rewrite body to strip the generic-placeholder + duplicated-
-                # heading leading lines we consumed for the title.
-                if title_source_line is not None and lines_to_strip_from_body:
+                # Real-chapter-start branch: rewrite body to strip BOTH the
+                # leading placeholder lines AND the title-source line (which
+                # duplicates the chapter heading we're about to emit).
+                if title_source_line is not None:
                     body_lines = body.splitlines()
-                    drop_set = set(lines_to_strip_from_body)
+                    drop_set = set(placeholder_lines_to_strip) | {title_source_line}
                     new_body_lines: list[str] = []
                     stripping = True
                     for line in body_lines:
