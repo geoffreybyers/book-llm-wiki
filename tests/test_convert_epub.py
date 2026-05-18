@@ -24,6 +24,103 @@ def test_epub_structure_returns_ordered_sections(normal_epub: Path):
     ]
 
 
+def _build_epub3_no_ncx(out_path: Path, sections: list[tuple[str, str]]) -> Path:
+    """Build an EPUB3 whose only navigation is nav.xhtml (no toc.ncx).
+
+    Mirrors retail EPUB3 releases (e.g. the Grand Central edition of
+    *So Good They Can't Ignore You*): the package declares no
+    ``application/x-dtbncx+xml`` item, and the toc lives in an
+    ``<item properties="nav">`` XHTML document.
+    """
+    import zipfile
+
+    manifest, spine, nav_lis, html_files = [], [], [], {}
+    for i, (label, body) in enumerate(sections, start=1):
+        href = f"section-{i}.xhtml"
+        manifest.append(
+            f'    <item id="s{i}" href="{href}" media-type="application/xhtml+xml"/>'
+        )
+        spine.append(f'    <itemref idref="s{i}"/>')
+        nav_lis.append(f'        <li><a href="{href}">{label}</a></li>')
+        html_files[href] = (
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<html xmlns="http://www.w3.org/1999/xhtml">'
+            f"<head><title>{label}</title></head>"
+            f"<body><h1>{label}</h1><p>{body}</p></body></html>"
+        )
+
+    nav_xhtml = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml" '
+        'xmlns:epub="http://www.idpf.org/2007/ops">'
+        "<head><title>Contents</title></head><body>"
+        '<nav epub:type="toc"><ol>\n'
+        + "\n".join(nav_lis)
+        + "\n</ol></nav></body></html>"
+    )
+    content_opf = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" '
+        'unique-identifier="BookId">\n'
+        '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
+        "    <dc:title>EPUB3 No NCX</dc:title>\n"
+        "    <dc:creator>Test Author</dc:creator>\n"
+        '    <dc:identifier id="BookId">urn:uuid:epub3-no-ncx</dc:identifier>\n'
+        "    <dc:language>en</dc:language>\n"
+        "  </metadata>\n"
+        "  <manifest>\n"
+        '    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" '
+        'properties="nav"/>\n'
+        + "\n".join(manifest)
+        + "\n  </manifest>\n  <spine>\n"
+        + "\n".join(spine)
+        + "\n  </spine>\n</package>\n"
+    )
+
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        zf.writestr(
+            "META-INF/container.xml",
+            '<?xml version="1.0"?>\n<container version="1.0" '
+            'xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+            '<rootfiles><rootfile full-path="OEBPS/content.opf" '
+            'media-type="application/oebps-package+xml"/></rootfiles></container>',
+        )
+        zf.writestr("OEBPS/content.opf", content_opf)
+        zf.writestr("OEBPS/nav.xhtml", nav_xhtml)
+        for href, html in html_files.items():
+            zf.writestr(f"OEBPS/{href}", html)
+    return out_path
+
+
+def test_epub_structure_parses_epub3_nav_when_no_ncx(tmp_path: Path):
+    """EPUB3-only books (no toc.ncx) must still yield a navigation structure.
+
+    Regression: the Grand Central edition of *So Good They Can't Ignore You*
+    ships only nav.xhtml; epub_structure() returned [] for it, so
+    convert_epub_to_markdown short-circuited to flat/low passthrough and
+    the 61k-word book lost all chapter structure.
+    """
+    epub = _build_epub3_no_ncx(
+        tmp_path / "epub3.epub",
+        sections=[
+            ("Introduction", "Intro body. " * 30),
+            ("Chapter One: The Passion", "Chapter one body. " * 60),
+            ("Chapter Two: Career Capital", "Chapter two body. " * 60),
+            ("Conclusion", "Conclusion body. " * 30),
+        ],
+    )
+    sections = epub_structure(epub)
+    names = [s["name"] for s in sections]
+    assert names == [
+        "Introduction",
+        "Chapter One: The Passion",
+        "Chapter Two: Career Capital",
+        "Conclusion",
+    ]
+    assert sections[1]["src"] == "section-2.xhtml"
+
+
 from book_llm_wiki.convert.epub import classify_section, SectionClass
 
 

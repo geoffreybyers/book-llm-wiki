@@ -26,6 +26,8 @@ OPF_NS = {
     "dc": "http://purl.org/dc/elements/1.1/",
 }
 NCX_NS = {"ncx": "http://www.daisy.org/z3986/2005/ncx/"}
+XHTML_NS_URI = "http://www.w3.org/1999/xhtml"
+EPUB_OPS_NS_URI = "http://www.idpf.org/2007/ops"
 CONTAINER_NS = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
 
 
@@ -69,8 +71,102 @@ def epub_info(epub_path: Path) -> dict:
         }
 
 
+def _epub3_nav_structure(
+    zf: zipfile.ZipFile, opf: ET.Element, opf_dir: str
+) -> list[dict]:
+    """Parse the EPUB3 navigation document (nav.xhtml) toc into sections.
+
+    Many retail EPUB3 releases (e.g. the Grand Central edition of
+    *So Good They Can't Ignore You*) ship no EPUB2 ``toc.ncx`` — the only
+    reading-order map is the ``<item properties="nav">`` XHTML document
+    holding ``<nav epub:type="toc"><ol><li><a href>``. Returns the same
+    ``[{'name', 'src'}]`` shape as the NCX path so the structured
+    pipeline and its spine fallbacks engage identically.
+    """
+    import posixpath
+    from urllib.parse import unquote
+
+    manifest = opf.find("opf:manifest", OPF_NS)
+    if manifest is None:
+        return []
+    nav_href = None
+    for item in manifest.findall("opf:item", OPF_NS):
+        props = item.attrib.get("properties", "")
+        if "nav" in props.split():
+            nav_href = item.attrib.get("href")
+            break
+    if not nav_href:
+        return []
+
+    nav_path = f"{opf_dir}{nav_href}"
+    nav_dir = posixpath.dirname(nav_path)
+    try:
+        nav_xml = _read_zip_text(zf, nav_path)
+    except KeyError:
+        return []
+
+    def _resolve(href: str) -> str:
+        # nav hrefs are relative to the nav doc; normalize, then express
+        # relative to the OPF dir so it matches manifest hrefs the same
+        # way NCX `content/@src` does.
+        full = posixpath.normpath(posixpath.join(nav_dir, unquote(href)))
+        base = opf_dir.rstrip("/")
+        if base and full.startswith(base + "/"):
+            return full[len(base) + 1 :]
+        return full.lstrip("/")
+
+    entries: list[dict] = []
+    try:
+        root = ET.fromstring(nav_xml)
+    except ET.ParseError:
+        # Retail nav docs are occasionally not well-formed XML; fall back
+        # to a permissive regex over the first toc <nav> block.
+        m = re.search(
+            r'<nav\b[^>]*epub:type="toc"[^>]*>(.*?)</nav>',
+            nav_xml,
+            re.IGNORECASE | re.DOTALL,
+        )
+        block = m.group(1) if m else nav_xml
+        for href, label in re.findall(
+            r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+            block,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            name = re.sub(r"<[^>]+>", "", label)
+            name = re.sub(r"\s+", " ", name).strip()
+            if name and href:
+                entries.append({"name": name, "src": _resolve(href)})
+        return entries
+
+    def _tag(el: ET.Element) -> str:
+        return el.tag.split("}", 1)[-1].lower()
+
+    navs = [el for el in root.iter() if _tag(el) == "nav"]
+    toc_nav = None
+    for nav in navs:
+        if nav.attrib.get(f"{{{EPUB_OPS_NS_URI}}}type") == "toc":
+            toc_nav = nav
+            break
+    if toc_nav is None and navs:
+        toc_nav = navs[0]
+    if toc_nav is None:
+        return []
+
+    for a in (el for el in toc_nav.iter() if _tag(el) == "a"):
+        href = a.attrib.get("href")
+        if not href:
+            continue
+        name = re.sub(r"\s+", " ", "".join(a.itertext())).strip()
+        if name:
+            entries.append({"name": name, "src": _resolve(href)})
+    return entries
+
+
 def epub_structure(epub_path: Path) -> list[dict]:
-    """Return list of {'name': str, 'src': str} in navMap/playOrder."""
+    """Return list of {'name': str, 'src': str} in navMap/playOrder.
+
+    Falls back to the EPUB3 nav document when the package has no NCX.
+    """
     with zipfile.ZipFile(epub_path) as zf:
         opf_path = _find_opf_path(zf)
         opf_dir = str(Path(opf_path).parent) + "/" if "/" in opf_path else ""
@@ -84,7 +180,8 @@ def epub_structure(epub_path: Path) -> list[dict]:
                 ncx_href = item.attrib["href"]
                 break
         if ncx_href is None:
-            return []
+            # EPUB3 with no NCX → parse the nav.xhtml toc instead.
+            return _epub3_nav_structure(zf, opf, opf_dir)
 
         ncx_path = f"{opf_dir}{ncx_href}"
         ncx = ET.fromstring(_read_zip_text(zf, ncx_path))
