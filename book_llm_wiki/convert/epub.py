@@ -190,7 +190,11 @@ _PREAMBLE_PATTERNS = [
     re.compile(r"^preface\b", re.IGNORECASE),       # matches "Preface", "Preface to the X Edition", "Preface: ..."
     re.compile(r"^prologue\b", re.IGNORECASE),
     re.compile(r"^introduction\b", re.IGNORECASE),  # matches "Introduction", "Introduction: My Story"
-    re.compile(r"^welcome\b", re.IGNORECASE),
+    # Genuine welcome-preamble forms only ("Welcome", "Welcome!",
+    # "Welcome, Reader", "Welcome to the X") — NOT essay titles that merely
+    # start with the word ("Welcome obscurity" in Rework, which the old
+    # ^welcome\b pattern mis-promoted to a Preamble).
+    re.compile(r"^welcome(?:\s+to\b|[!?.,:;]|$)", re.IGNORECASE),
     re.compile(r"^(an? )?important note\b", re.IGNORECASE),  # "An Important Note from Nir"
     re.compile(r"^author[’']?s note\b", re.IGNORECASE),  # straight or curly apostrophe
     re.compile(r"^note from\b", re.IGNORECASE),
@@ -699,6 +703,11 @@ def convert_pages_epub_to_markdown(epub_path: Path, out_path: Path) -> Conversio
             continue
         seen_positions.add(position)
         deduped_structure.append({**section, "_position": position})
+
+    # The spine is the spec-authoritative reading order; NCX playOrder is
+    # only advisory and some EPUBs scramble it relative to the spine. Emit
+    # in spine order so sections never appear out of reading order.
+    deduped_structure.sort(key=lambda d: d["_position"])
 
     with zipfile.ZipFile(epub_path) as zf:
         opf_path = _find_opf_path(zf)
@@ -1814,6 +1823,13 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
             continue
         seen_positions.add(position)
         deduped_structure.append({**section, "_position": position})
+
+    # The spine is the spec-authoritative reading order; NCX playOrder is
+    # only advisory and some EPUBs (Ebury's *ReWork*) interleave content
+    # navPoints ahead of front matter. Emit in spine order so sections
+    # never appear out of reading order and the first-NCX-wins title
+    # dedupe above can't be reordered by a scrambled playOrder.
+    deduped_structure.sort(key=lambda d: d["_position"])
 
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)

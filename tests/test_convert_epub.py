@@ -2588,3 +2588,75 @@ def test_convert_does_not_off_by_one_when_titlepage_navpoint_is_book_title(
 
     assert result.chapter_count == 3
     assert result.mode == "structured"
+
+
+def test_classify_welcome_only_matches_genuine_welcome_preamble():
+    """Regression: the ^welcome\\b preamble pattern false-matched essay
+    titles like Rework's 'Welcome obscurity', emitting them as
+    '# Preamble' and dropping them from chapter numbering. Genuine
+    front-matter 'Welcome' sections must still classify as PREAMBLE."""
+    # Genuine welcome-preamble forms still work.
+    assert classify_section("Welcome") == SectionClass.PREAMBLE
+    assert classify_section("Welcome!") == SectionClass.PREAMBLE
+    assert classify_section("Welcome, Reader") == SectionClass.PREAMBLE
+    assert classify_section("Welcome to the Show") == SectionClass.PREAMBLE
+    # Essay titles that merely start with the word "welcome" must not.
+    assert classify_section("Welcome obscurity") == SectionClass.CHAPTER
+    assert classify_section("Welcome aboard the team") == SectionClass.CHAPTER
+
+
+def test_convert_emits_sections_in_spine_order_when_ncx_playorder_scrambled(
+    tmp_path: Path,
+):
+    """Regression: Ebury's *ReWork* ships an NCX whose playOrder interleaves
+    content-essay navPoints before the front-matter navPoints, all
+    fragment-anchored into shared spine files. Iterating NCX playOrder made
+    the deduped emit order non-monotonic in spine position — Title Page /
+    Introduction emitted *after* content chapters, and content files titled
+    by their first essay instead of their section header.
+
+    The spine is the spec-authoritative reading order; emitted sections
+    must follow it regardless of NCX playOrder.
+    """
+    sections = [
+        ("Title Page", "REWORK\nby Jason Fried"),
+        ("Introduction", "INTRO-BODY " * 60),
+        ("First", "FIRST-SECTION-BODY " * 60),
+        ("The new reality", "NEWREALITY-BODY " * 60),
+        ("Make a dent in the universe", "DENT-BODY " * 60),
+        ("Welcome obscurity", "OBSCURITY-BODY " * 60),
+        ("Acknowledgments", "ACK-BODY " * 40),
+    ]
+    # Spine = natural reading order. NCX playOrder scrambled exactly like
+    # ReWork: two content sections (idx 3, 4) before front matter (0, 1, 2).
+    epub_path = _build_epub_with_layout(
+        tmp_path / "rework.epub",
+        title="ReWork",
+        sections=sections,
+        spine_indices=[0, 1, 2, 3, 4, 5, 6],
+        ncx_indices=[3, 0, 4, 1, 2, 5, 6],
+    )
+
+    out = tmp_path / "out.md"
+    convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+
+    # Emitted in spine order: front matter precedes all content.
+    i_title = text.index("# Front Matter — Title Page")
+    i_intro = text.index("# Preamble — Introduction")
+    i_first = text.index("First")
+    i_newreality = text.index("The new reality")
+    i_dent = text.index("Make a dent in the universe")
+    assert i_title < i_intro < i_first < i_newreality < i_dent
+
+    # No off-by-one / no front matter consuming chapter numbers.
+    assert "# Chapter 1 — First" in text
+    assert "# Chapter 2 — The new reality" in text
+    assert "# Chapter 3 — Make a dent in the universe" in text
+
+    # C: "Welcome obscurity" is a chapter essay, not a Preamble.
+    assert "# Chapter 4 — Welcome obscurity" in text
+    assert "# Preamble — Welcome obscurity" not in text
+
+    # Back/front matter still filtered correctly.
+    assert "# Front Matter — Acknowledgments" in text
