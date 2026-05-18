@@ -595,6 +595,96 @@ def test_epub2md_skip_offset_compensates_for_root_level_cover(tmp_path: Path):
     assert _epub2md_skip_offset(section_dir2, manifest_no_cover_first) == 0
 
 
+def test_epub2md_skip_offset_gap_numbered_scheme_returns_zero(tmp_path: Path):
+    """Regression: newer epub2md (1.6.2) drops the leading cover/titlepage but
+    PRESERVES each remaining file's 1-indexed manifest position in its filename
+    prefix, leaving a numeric gap (no ``01-`` file; lowest prefix is ``02-``).
+    In this "gap" scheme the prefix already equals the manifest position, so
+    NO left shift is needed and ``_epub2md_skip_offset`` must return 0.
+
+    The older scheme renumbered densely from ``01-`` after the drop (handled by
+    ``test_epub2md_skip_offset_compensates_for_root_level_cover``, which must
+    keep returning 1). Distinguishing the two by the emitted filename prefixes
+    rather than guessing from the manifest is the fix.
+
+    Confirmed in the wild on *SPIN Selling* (Neil Rackham, McGraw-Hill 2017
+    reissue, codeMantra-built). manifest[0] is ``cover.html``; epub2md emits
+    ``02-Title_Page.md`` … ``17-author.md`` with no ``01-``. Before the fix
+    the cover-name heuristic returned 1, shifting every section's body one
+    file left (``# Chapter 1`` got the Preface, ``# Chapter 2`` got Chapter 1,
+    …).
+    """
+    from book_llm_wiki.convert.epub import (
+        _epub2md_skip_offset,
+        _section_body_for_position,
+    )
+
+    section_dir = tmp_path / "sections"
+    section_dir.mkdir()
+
+    # 17 XHTML manifest items; epub2md drops manifest[0] (cover.html) and emits
+    # 16 files numbered 02..17 — the original manifest positions preserved.
+    manifest = [
+        "cover.html",
+        "title.html",
+        "copyright.html",
+        "content.html",
+        "preface.html",
+        "ch01.html",
+        "ch02.html",
+        "ch03.html",
+        "ch04.html",
+        "ch05.html",
+        "ch06.html",
+        "ch07.html",
+        "ch08.html",
+        "appa.html",
+        "appb.html",
+        "index.html",
+        "author.html",
+    ]
+    names = {
+        2: "Title_Page",
+        3: "Copyright_Page",
+        4: "Contents",
+        5: "Preface",
+        6: "1._Sales_Behavior_and_Sales_Success",
+        7: "2._Obtaining_Commitment",
+        8: "3._Customer_Needs",
+        9: "4._The_SPIN_Strategy",
+        10: "5._Giving_Benefits",
+        11: "6._Preventing_Objections",
+        12: "7._Preliminaries",
+        13: "8._Turning_Theory_into_Practice",
+        14: "Appendix_A",
+        15: "Appendix_B",
+        16: "Index",
+        17: "author",
+    }
+    for pos, stem in names.items():
+        (section_dir / f"{pos:02d}-{stem}.md").write_text(f"body of {stem}")
+
+    # Gap scheme: lowest emitted prefix is 02, md_count (16) < manifest (17).
+    # No shift — the prefix already equals the manifest position.
+    assert _epub2md_skip_offset(section_dir, manifest) == 0
+
+    # End-to-end alignment with the resulting offset: each manifest position
+    # must resolve to its own body, not the previous file's.
+    offset = _epub2md_skip_offset(section_dir, manifest)
+    assert "Copyright_Page" in _section_body_for_position(
+        section_dir, position=3, skip_offset=offset
+    )
+    assert "Preface" in _section_body_for_position(
+        section_dir, position=5, skip_offset=offset
+    )
+    assert "1._Sales_Behavior" in _section_body_for_position(
+        section_dir, position=6, skip_offset=offset
+    )
+    assert "Appendix_A" in _section_body_for_position(
+        section_dir, position=14, skip_offset=offset
+    )
+
+
 def test_section_body_for_position_honors_skip_offset(tmp_path: Path):
     """``_section_body_for_position`` must subtract ``skip_offset`` from the
     1-indexed manifest position before globbing, and return empty when the

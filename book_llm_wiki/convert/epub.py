@@ -739,20 +739,49 @@ def _epub2md_skip_offset(section_md_dir: Path, manifest_hrefs: list[str]) -> int
       - Blue Ocean Strategy (Harvard Business Review 2015): manifest[0] at
         ``Text/titlepage.html`` (subdir), basename still "titlepage".
 
-    Detection: manifest count > emitted count AND manifest[0]'s basename
-    matches the cover/titlepage family. We do NOT require the file to be
-    at OPF root — Blue Ocean's titlepage is in a subdirectory and is still
-    dropped. We do NOT cap the total diff — Blue Ocean drops BOTH a
-    leading titlepage AND a trailing cover image (total diff 2) but only
-    the leading drop shifts NCX-referenced body lookups; the trailing
-    cover sits past the spine and is invisible.
+    epub2md has TWO numbering schemes after it drops the leading cover:
 
-    Returns 1 when the leading-skip is detected, 0 otherwise.
+      (a) "dense" — older epub2md renumbers the remaining files densely from
+          ``01-`` (so the prefix is the *emitted* index, off by the number of
+          skipped leading items). Needs a left shift. Observed on Clear
+          Thinking (Penguin/Portfolio 2023), Thinking, Fast and Slow,
+          Blue Ocean Strategy (HBR 2015).
+
+      (b) "gap" — newer epub2md (1.6.2) PRESERVES each remaining file's
+          1-indexed manifest position in its prefix, leaving a numeric gap
+          (no ``01-`` file; lowest prefix is ``02-``). The prefix already
+          equals the manifest position, so NO shift is needed. Observed on
+          SPIN Selling (Neil Rackham, McGraw-Hill 2017, codeMantra-built).
+
+    The schemes are distinguished by hard evidence — the emitted filename
+    prefixes — not by guessing from the manifest: if the lowest emitted
+    prefix is ≥ 2, epub2md left a gap (scheme b) and the prefix is already
+    the manifest position → return 0. Only the dense scheme (lowest prefix
+    1, or unparseable) falls back to the proven cover/titlepage-basename
+    heuristic, which returns 1 when manifest[0] is in the cover family. We
+    do NOT require the file to be at OPF root — Blue Ocean's titlepage is in
+    a subdirectory and is still dropped. We do NOT cap the total diff —
+    Blue Ocean drops BOTH a leading titlepage AND a trailing cover image
+    (total diff 2) but only the leading drop shifts NCX-referenced body
+    lookups; the trailing cover sits past the spine and is invisible.
+
+    Returns 1 when the dense leading-skip is detected, 0 otherwise.
     """
-    md_count = sum(1 for _ in section_md_dir.glob("*.md"))
+    md_files = list(section_md_dir.glob("*.md"))
+    md_count = len(md_files)
     if md_count >= len(manifest_hrefs):
         return 0
     if not manifest_hrefs:
+        return 0
+    # Scheme detection from the emitted filename numeric prefixes.
+    prefixes = [
+        int(m.group(1))
+        for m in (re.match(r"^(\d+)-", f.name) for f in md_files)
+        if m
+    ]
+    if prefixes and min(prefixes) >= 2:
+        # Gap scheme: epub2md kept the original manifest-position numbers,
+        # so the prefix already == the manifest position. No shift.
         return 0
     first_basename = Path(manifest_hrefs[0]).stem.lower()
     looks_like_cover = any(
