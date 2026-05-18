@@ -2511,3 +2511,80 @@ def test_convert_calibre_multi_file_chapter_consolidates_continuations(
     assert result.chapter_count == 3
     assert result.conversion_quality == "high"
     assert result.mode == "structured"
+
+
+def test_looks_like_title_page_helper():
+    """Unit: a first-section navPoint labeled with a superset of the book
+    title's tokens (the title-page-as-chapter pattern) is detected, while
+    real chapter labels are not."""
+    from book_llm_wiki.convert.epub import _looks_like_title_page
+
+    title = "Sam Walton: Made in America"
+    # Bantam's NCX[0] label — book title tokens plus "My Story".
+    assert _looks_like_title_page("Sam Walton, Made In America: My Story", title)
+    # Exact title match (other publishers label the title page this way).
+    assert _looks_like_title_page("Sam Walton: Made in America", title)
+    # Real chapters are not supersets of the title token set.
+    assert not _looks_like_title_page("Learning to Value a Dollar", title)
+    assert not _looks_like_title_page("Chapter 1: Learning to Value a Dollar", title)
+    # An explicit chapter pattern must never be reclassified even if it
+    # happens to contain the title tokens.
+    assert not _looks_like_title_page("1 Sam Walton Made In America", title)
+    # Ultra-short (single-token) titles are too coincidence-prone — skip.
+    assert not _looks_like_title_page("It Begins", "It")
+    # No title metadata → never fires.
+    assert not _looks_like_title_page("Anything", "")
+
+
+def test_convert_does_not_off_by_one_when_titlepage_navpoint_is_book_title(
+    tmp_path: Path,
+):
+    """Regression: Bantam's *Sam Walton: Made in America* labels its first
+    NCX navPoint 'Sam Walton, Made In America: My Story' (the title page),
+    which classify_section() has no pattern for, so it fell through to the
+    CHAPTER default and consumed chapter number 1 — shifting every real
+    chapter +1 (raw '# Chapter 2' was actually book Chapter 1, etc.).
+
+    The title page must be Front Matter and the first real chapter must be
+    '# Chapter 1', not '# Chapter 2'.
+    """
+    body = "REAL-BODY " * 60
+    sections = [
+        ("Sam Walton, Made In America: My Story",
+         "Sam Walton\nMade in America\nMy Story\nby Sam Walton\nBANTAM BOOKS"),
+        ("Contents", "Acknowledgments\nForeword\n1 Learning to Value a Dollar"),
+        ("Acknowledgements", "ACK-BODY " * 40),
+        ("Foreword", "FOREWORD-BODY " * 60),
+        ("Learning to Value a Dollar", "CH1 " + body),
+        ("Starting on a Dime", "CH2 " + body),
+        ("Bouncing Back", "CH3 " + body),
+    ]
+    epub_path = _build_epub_with_layout(
+        tmp_path / "samwalton.epub",
+        title="Sam Walton: Made in America",
+        sections=sections,
+        spine_indices=[0, 1, 2, 3, 4, 5, 6],
+        ncx_indices=[0, 1, 2, 3, 4, 5, 6],
+    )
+
+    out = tmp_path / "out.md"
+    result = convert_epub_to_markdown(epub_path, out)
+    text = out.read_text()
+
+    # The title page is Front Matter, not Chapter 1.
+    assert "# Front Matter — Sam Walton, Made In America: My Story" in text
+    assert "# Chapter 1 — Sam Walton, Made In America: My Story" not in text
+
+    # No off-by-one: the first real chapter is Chapter 1.
+    assert "# Chapter 1 — Learning to Value a Dollar" in text
+    assert "# Chapter 2 — Starting on a Dime" in text
+    assert "# Chapter 3 — Bouncing Back" in text
+    assert "# Chapter 4 —" not in text
+
+    # Front/back/preamble matter still classified correctly around it.
+    assert "# Back Matter — Contents" in text
+    assert "# Front Matter — Acknowledgements" in text
+    assert "# Preamble — Foreword" in text
+
+    assert result.chapter_count == 3
+    assert result.mode == "structured"

@@ -328,6 +328,50 @@ def classify_section(name: str) -> SectionClass:
     return SectionClass.CHAPTER
 
 
+_TITLE_TOKEN_SPLIT = re.compile(r"[^\w]+")
+
+
+def _title_tokens(text: str) -> set[str]:
+    return {t for t in _TITLE_TOKEN_SPLIT.split((text or "").lower()) if t}
+
+
+def _matches_chapter_pattern(name: str) -> bool:
+    n = (name or "").strip()
+    return any(pat.search(n) for pat in _CHAPTER_PATTERNS)
+
+
+def _looks_like_title_page(name: str, book_title: str | None) -> bool:
+    """Whether a section labeled ``name`` is a title page mislabeled as a
+    chapter.
+
+    Publishers commonly label the first NCX navPoint with the book's own
+    title — sometimes verbatim, sometimes a superset like
+    ``"<Title>: My Story"``. ``classify_section`` has no pattern for these,
+    so they fall through to the CHAPTER default and consume chapter
+    number 1, shifting every real chapter +1. Bantam's *Sam Walton: Made
+    in America* is the documented repro: NCX[0] is
+    ``"Sam Walton, Made In America: My Story"`` while ``dc:title`` is
+    ``"Sam Walton: Made in America"``.
+
+    The signal is tight by construction: the section name's normalized
+    token set must be a superset of the book title's tokens (so a real
+    chapter like "Learning to Value a Dollar" can never match), the title
+    must have ≥2 tokens (single-token titles like "It" are too
+    coincidence-prone), and an explicit chapter pattern ("1 ...",
+    "Chapter 1 ...") is never overridden. Call sites additionally gate on
+    "no chapter emitted yet" so only a pre-first-chapter title page is
+    ever affected.
+    """
+    if not book_title:
+        return False
+    title_tokens = _title_tokens(book_title)
+    if len(title_tokens) < 2:
+        return False
+    if _matches_chapter_pattern(name):
+        return False
+    return title_tokens.issubset(_title_tokens(name))
+
+
 def is_pdf_origin(epub_path: Path) -> bool:
     """True if EPUB shows signs of being derived from a PDF.
 
@@ -660,6 +704,8 @@ def convert_pages_epub_to_markdown(epub_path: Path, out_path: Path) -> Conversio
         opf_path = _find_opf_path(zf)
         opf_dir = str(Path(opf_path).parent) + "/" if "/" in opf_path else ""
 
+        book_title = epub_info(epub_path).get("title")
+
         chapter_num = 0
         parts: list[str] = []
 
@@ -681,6 +727,12 @@ def convert_pages_epub_to_markdown(epub_path: Path, out_path: Path) -> Conversio
             for section in deduped_structure:
                 name = section["name"]
                 cls = classify_section(name)
+                if (
+                    cls == SectionClass.CHAPTER
+                    and chapter_num == 0
+                    and _looks_like_title_page(name, book_title)
+                ):
+                    cls = SectionClass.FRONT
                 href = manifest_hrefs[section["_position"] - 1]
                 try:
                     xhtml = zf.read(f"{opf_dir}{href}").decode("utf-8", errors="replace")
@@ -1772,11 +1824,23 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         # which would shift every body off-by-one. Detect and compensate.
         skip_offset = _epub2md_skip_offset(section_dir, manifest_hrefs)
 
+        book_title = epub_info(epub_path).get("title")
+
         chapter_num = 0
         parts: list[str] = []
         for section in deduped_structure:
             name = section["name"]
             cls = classify_section(name)
+            # A first-section title page is often labeled with the book's
+            # own title and falls through to the CHAPTER default, consuming
+            # chapter number 1 and shifting every real chapter +1. Catch it
+            # before any real chapter has been emitted.
+            if (
+                cls == SectionClass.CHAPTER
+                and chapter_num == 0
+                and _looks_like_title_page(name, book_title)
+            ):
+                cls = SectionClass.FRONT
             body = _section_body_for_position(
                 section_dir, section["_position"], skip_offset=skip_offset
             )
