@@ -94,6 +94,24 @@ def test_is_ingested_after_append(tmp_vault: Path):
     assert is_ingested(tmp_vault, "Deep Work", "Cal Newport") is True
 
 
+def test_is_ingested_normalizes_whitespace_and_case(tmp_vault: Path):
+    # Regression: "The 5AM Club" and "The 5 AM Club" are the same book but
+    # differ by a missing space. Exact-match dedup let both through and
+    # created duplicate folders/rows/queue entries. Dedup must match
+    # whitespace- and case-insensitively.
+    bootstrap_vault(tmp_vault)
+    row = CollectedRow(
+        title="The 5 AM Club", author="Robin Sharma", status="queued",
+        chapters=21, conversion_quality="high", mode="structured",
+        lens="", analyzed_at="", source="/tmp/x.epub",
+    )
+    append_collected_row(tmp_vault, row)
+    assert is_ingested(tmp_vault, "The 5AM Club", "Robin Sharma") is True
+    assert is_ingested(tmp_vault, "the 5 am  club", "robin sharma") is True
+    # A genuinely different book by the same author must NOT be swallowed.
+    assert is_ingested(tmp_vault, "The 5 PM Club", "Robin Sharma") is False
+
+
 def test_enqueue_and_read_queue(tmp_vault: Path):
     bootstrap_vault(tmp_vault)
     enqueue_for_analysis(tmp_vault, "Deep Work", "Cal Newport")

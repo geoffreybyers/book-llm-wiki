@@ -252,9 +252,19 @@ def _read_collected_rows(vault_path: Path) -> list[dict]:
     return rows
 
 
+def _normalize_for_match(s: str) -> str:
+    """Collapse a title/author to a match key: lowercased, all whitespace
+    removed. So "The 5AM Club" and "The 5 AM Club" compare equal — the
+    difference there is a *missing* space, not extra ones, so collapsing
+    runs of whitespace is not enough; we strip whitespace entirely."""
+    return "".join(s.split()).lower()
+
+
 def is_ingested(vault_path: Path, title: str, author: str) -> bool:
+    nt, na = _normalize_for_match(title), _normalize_for_match(author)
     for row in _read_collected_rows(vault_path):
-        if row["title"] == title and row["author"] == author:
+        if (_normalize_for_match(row["title"]) == nt
+                and _normalize_for_match(row["author"]) == na):
             return True
     return False
 
