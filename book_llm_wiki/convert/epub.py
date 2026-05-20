@@ -1986,6 +1986,28 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
             body = _section_body_for_position(
                 section_dir, section["_position"], skip_offset=skip_offset
             )
+            # InDesign trade-nonfiction layout (e.g. Morgan Housel,
+            # *The Psychology of Money*, Harriman House 2020) places each
+            # chapter's title-image on its own XHTML page and the chapter
+            # prose on the next spine page. The NCX entry points at the
+            # image-only stub, so the body lookup returns ~1 word. Absorb
+            # the adjacent spine body when (1) this section is a chapter,
+            # (2) the stub has no markdown heading and no prose (rules
+            # out Calibre-split-spine wrappers, which carry an h1 and a
+            # link-back paragraph and belong on the merge-mode fallback),
+            # and (3) the adjacent position is not itself NCX-referenced.
+            if (
+                cls == SectionClass.CHAPTER
+                and len(body.split()) < 20
+                and not any(ln.lstrip().startswith("#") for ln in body.splitlines())
+            ):
+                next_pos = section["_position"] + 1
+                if next_pos not in seen_positions:
+                    next_body = _section_body_for_position(
+                        section_dir, next_pos, skip_offset=skip_offset
+                    )
+                    if len(next_body.split()) > 100:
+                        body = next_body
             if cls == SectionClass.PART:
                 if _should_drop_part_for_lack_of_body(name, body):
                     continue  # divider-only Part page; drop entirely
@@ -2001,13 +2023,31 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
                 heading = f"# Back Matter — {name}"
             parts.append(f"{heading}\n\n{body.strip()}\n")
 
+        # Routing guard: if the structured walk produced substantive chapter
+        # bodies, the structural-fallback detectors below are bypassed. They
+        # exist to catch failed body extraction, and a walk that filled all
+        # chapter bodies didn't fail. Without this guard, EPUBs that match a
+        # structural fallback signature (e.g. _section_mode_part_stubs_with_-
+        # unref_body) get routed to a less-precise extractor even when the
+        # adjacent-body absorption above already recovered the full prose.
+        _chapter_parts = [p for p in parts if p.startswith("# Chapter ")]
+        _walk_complete = len(_chapter_parts) >= 3 and (
+            sum(
+                1
+                for p in _chapter_parts
+                if len(p.partition("\n")[2].split()) >= 100
+            )
+            / len(_chapter_parts)
+            >= 0.8
+        )
+
         # Detect the Calibre-pre-split-spine pattern: NCX entries point at
         # tiny chapter-wrapper files while the actual chapter body lives in
         # subsequent _split_NNN.html files. Section-mode reads only the
         # wrapper, leaving every chapter near-empty. Re-run via merge mode
         # (which concatenates all spine content under the EPUB's own H1s) and
         # use that output instead.
-        if _section_mode_chapters_look_empty(parts):
+        if not _walk_complete and _section_mode_chapters_look_empty(parts):
             return _finalize_quality(
                 out_path,
                 _convert_via_merge_mode_with_section_labels(epub_path, out_path),
@@ -2021,7 +2061,9 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         # Brian Tracy's *The Psychology of Selling* (Thomas Nelson 2004).
         # Re-run via spine-body extraction (which ignores the NCX and walks
         # the spine in reading order, skipping stubs).
-        if _section_mode_routed_to_stubs(epub_path, deduped_structure, manifest_hrefs):
+        if not _walk_complete and _section_mode_routed_to_stubs(
+            epub_path, deduped_structure, manifest_hrefs
+        ):
             return _finalize_quality(
                 out_path, _convert_via_spine_body_extraction(epub_path, out_path)
             )
@@ -2033,7 +2075,9 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         # The two prior detectors miss this case because each requires ≥3
         # NCX entries to fire. Real example: Michael Port's *Book Yourself
         # Solid* (John Wiley & Sons 2010, Sigil-built).
-        if _section_mode_ncx_is_degenerate(epub_path, deduped_structure, manifest_hrefs):
+        if not _walk_complete and _section_mode_ncx_is_degenerate(
+            epub_path, deduped_structure, manifest_hrefs
+        ):
             return _finalize_quality(
                 out_path, _convert_via_spine_body_extraction(epub_path, out_path)
             )
@@ -2049,7 +2093,7 @@ def convert_epub_to_markdown(epub_path: Path, out_path: Path) -> ConversionResul
         # Part 1 sections ARE correctly NCX-referenced — so chapters
         # don't look empty in aggregate, the unref/ref ratio is reversed,
         # and the NCX is far from degenerate.
-        if _section_mode_part_stubs_with_unref_body(
+        if not _walk_complete and _section_mode_part_stubs_with_unref_body(
             epub_path, deduped_structure, manifest_hrefs
         ):
             return _finalize_quality(
