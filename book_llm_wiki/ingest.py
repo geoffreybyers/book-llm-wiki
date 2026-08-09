@@ -18,6 +18,17 @@ from book_llm_wiki.vault import (
 SUPPORTED_EXTS = {".epub", ".azw3", ".mobi", ".pdf", ".md", ".markdown"}
 
 
+def _is_housekeeping(path: Path, root: Path) -> bool:
+    """True for `_`-prefixed files/dirs under root — not books.
+
+    Covers scratch notes like `downloads/_STATUS.md` and quarantine folders
+    like `downloads/_quarantine_wrong_match/`, which otherwise get ingested as
+    books and reappear on every run. Only path parts below `root` are checked,
+    so a root that itself starts with `_` still works.
+    """
+    return any(part.startswith("_") for part in path.relative_to(root).parts)
+
+
 def ingest_file(src: Path, vault_path: Path) -> dict:
     """Convert a book, write raw markdown, update vault metadata files.
 
@@ -31,7 +42,20 @@ def ingest_file(src: Path, vault_path: Path) -> dict:
     vault_path = Path(vault_path)
     bootstrap_vault(vault_path)
 
-    meta = extract_metadata(src)
+    try:
+        meta = extract_metadata(src)
+    except Exception as e:
+        # Corrupt/unreadable file. Report it but write nothing to the vault:
+        # with no readable metadata the only available title is the raw
+        # filename, and a row under that name is junk the user has to clean up.
+        # Staying out of collected.md means the file is re-reported (and
+        # re-tried) on the next run, which is the visibility we want.
+        return {
+            "title": src.stem, "author": "", "status": "failed",
+            "chapters": 0, "conversion_quality": "low", "mode": "flat",
+            "error": f"{type(e).__name__}: {e}",
+        }
+
     title = (meta.get("title") or "").strip()
     author = (meta.get("author") or "").strip()
 
@@ -94,8 +118,19 @@ def ingest_directory(directory: Path, vault_path: Path) -> list[dict]:
     # Sort for stable order
     candidates = sorted(
         p for p in directory.rglob("*")
-        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS and not str(p).startswith(str(vault_path))
+        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS
+        and not str(p).startswith(str(vault_path))
+        and not _is_housekeeping(p, directory)
     )
     for path in candidates:
-        results.append(ingest_file(path, vault_path))
+        try:
+            results.append(ingest_file(path, vault_path))
+        except Exception as e:
+            # Backstop: ingest_file handles the failures it knows about, but a
+            # single unexpected one still must not take down the whole run.
+            results.append({
+                "title": path.stem, "author": "", "status": "failed",
+                "chapters": 0, "conversion_quality": "low", "mode": "flat",
+                "error": f"{type(e).__name__}: {e}",
+            })
     return results
