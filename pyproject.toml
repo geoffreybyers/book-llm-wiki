@@ -12,7 +12,11 @@ dev = [
     "pytest>=7.0",
 ]
 librarything = [
-    "scrapling>=0.4",
+    # The `fetchers` extra carries StealthyFetcher's browser stack (curl_cffi,
+    # playwright/patchright, camoufox). Bare `scrapling` stopped pulling it in
+    # as of 0.4.13, so importing StealthyFetcher fails without it.
+    # `scrapling install` must still be run once to fetch the browser binaries.
+    "scrapling[fetchers]>=0.4.13",
 ]
 
 [project.scripts]

@@ -22,9 +22,15 @@ Every shell snippet below uses `$REPO` for the repo root. Set it once at the sta
 
 ```bash
 REPO="$(git rev-parse --show-toplevel)"
+PY="$REPO/.venv/bin/python"   # falls back to `python3` if there is no venv
+[ -x "$PY" ] || PY=python3
 ```
 
 All downloads live under `$REPO/downloads/` and the API key is read from `$REPO/.env`.
+
+Use `$PY` — **not** bare `python3` — for every `book_llm_wiki.downloader.*` call.
+The LibraryThing module needs `scrapling`, which is installed only in the repo
+venv (`pip install -e ".[librarything]"`); bare `python3` fails on import.
 
 ## Single Book Workflow
 
@@ -43,7 +49,7 @@ Use the title as-is for searching.
 
 Run the LibraryThing search tool to check the user's catalog:
 ```bash
-python3 -m book_llm_wiki.downloader.librarything search "{title}"
+"$PY" -m book_llm_wiki.downloader.librarything search "{title}"
 ```
 
 This returns JSON with matching books and their collections. Parse the output:
@@ -51,7 +57,7 @@ This returns JSON with matching books and their collections. Parse the output:
 - **If the book is in the "library" collection** — it's already tracked. Proceed to Step 3.
 - **If the book is NOT in the catalog** — add it now:
   ```bash
-  python3 -m book_llm_wiki.downloader.librarything add "{Title}" "{Author}"
+  "$PY" -m book_llm_wiki.downloader.librarything add "{Title}" "{Author}"
   ```
   Then proceed to Step 3.
 
@@ -112,7 +118,7 @@ file "$REPO/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub"
 
 **Always** run the quality check on the downloaded file:
 ```bash
-python3 -m book_llm_wiki.downloader.epub_quality "$REPO/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub"
+"$PY" -m book_llm_wiki.downloader.epub_quality "$REPO/downloads/{Title} - {Author}/{Title} - {Author} - {MD5}.epub"
 ```
 
 The script prints JSON and exits 0 (good) or 1 (bad — PDF-conversion artifacts or broken metadata).
@@ -159,7 +165,7 @@ When the user asks to "download X missing books" (or "download all missing books
 
 Scrape the user's full LibraryThing catalog:
 ```bash
-python3 -m book_llm_wiki.downloader.librarything search ""
+"$PY" -m book_llm_wiki.downloader.librarything search ""
 ```
 
 Parse the JSON output. Filter to only books in the **"library"** collection.
